@@ -14,54 +14,122 @@ A Model Context Protocol (MCP) server for interactive Difference-in-Differences 
 
 ### Prerequisites
 
-1. **Python 3.9+** with the following packages:
+1. **Python 3.10+** - Required for MCP SDK
+
+2. **uv package manager** - Required for dependency management:
    ```bash
-   pip install fastmcp pandas numpy scipy statsmodels rpy2 matplotlib seaborn plotly
+   # macOS/Linux
+   curl -LsSf https://astral.sh/uv/install.sh | sh
+
+   # Or via Homebrew (recommended for macOS)
+   brew install uv
    ```
 
-2. **R** with DID packages:
-   ```r
-   install.packages(c("did", "bacondecomp", "fixest", "HonestDiD", "pretrends"))
+3. **R (4.0+)** with DID packages:
+   ```bash
+   # Run the installation script
+   Rscript install_r_packages.R
    ```
 
 ### Installation
 
-1. Clone this repository:
+#### Option 1: One-Click Install (Recommended)
+
+The easiest way to install ChatDiD in Claude Desktop:
+
+```bash
+# Clone the repository
+git clone https://github.com/cafferychen777/ChatDiD.git
+cd ChatDiD
+
+# Install with FastMCP (automatically configures Claude Desktop)
+fastmcp install claude-desktop src/chatdid_mcp/server.py --server-name "ChatDiD"
+```
+
+Then restart Claude Desktop completely (quit and reopen).
+
+#### Option 2: Manual Installation
+
+For more control or to use with other MCP clients (Cline, VSCode):
+
+1. Clone and set up the project:
    ```bash
-   git clone <repository-url>
+   git clone https://github.com/cafferychen777/ChatDiD.git
    cd ChatDiD
+
+   # Create virtual environment
+   uv venv
+   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+   # Install dependencies
+   uv pip install -r requirements.txt
    ```
 
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
+2. Configure your MCP client:
+
+   **For Claude Desktop:**
+
+   Edit the configuration file:
+   - macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+   - Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+
+   Add:
+   ```json
+   {
+     "mcpServers": {
+       "chatdid": {
+         "command": "uv",
+         "args": [
+           "--directory",
+           "/ABSOLUTE/PATH/TO/ChatDiD",
+           "run",
+           "fastmcp",
+           "run",
+           "src/chatdid_mcp/server.py"
+         ]
+       }
+     }
+   }
    ```
 
-### Running the Server
+   **For VSCode with GitHub Copilot:**
 
-#### Option 1: Direct execution
-```bash
-python run_server.py
+   Create `.vscode/mcp.json` in your workspace:
+   ```json
+   {
+     "mcpServers": {
+       "chatdid": {
+         "command": "uv",
+         "args": [
+           "--directory",
+           "/ABSOLUTE/PATH/TO/ChatDiD",
+           "run",
+           "fastmcp",
+           "run",
+           "src/chatdid_mcp/server.py"
+         ]
+       }
+     }
+   }
+   ```
+
+   **For Cline (VSCode extension):**
+
+   Open Cline → MCP Servers → Advanced MCP Settings, then add the same configuration.
+
+3. Restart your MCP client completely
+
+### Verifying Installation
+
+Once installed, open your MCP client and check that the ChatDiD tools are available:
+- `load_data`
+- `explore_data`
+- `diagnose_twfe`
+- `estimate_*` (various estimators)
+
+Try loading example data:
 ```
-
-#### Option 2: Using FastMCP CLI
-```bash
-fastmcp run src/chatdid_mcp/server.py
-```
-
-### Connecting to Claude Desktop
-
-Add to your `claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "chatdid": {
-      "command": "python",
-      "args": ["/path/to/ChatDiD/run_server.py"]
-    }
-  }
-}
+Load the mpdta dataset from data/examples/mpdta.csv
 ```
 
 ## Usage Example
@@ -147,7 +215,7 @@ If you use ChatDiD in your research, please cite:
   title={ChatDiD: Interactive Difference-in-Differences Analysis through Chat},
   author={ChatDiD Team},
   year={2024},
-  url={https://github.com/chatdid/chatdid-mcp-server}
+  url={https://github.com/cafferychen777/ChatDiD}
 }
 ```
 
