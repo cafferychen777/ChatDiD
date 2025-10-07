@@ -21,8 +21,15 @@ A Model Context Protocol (MCP) server for interactive Difference-in-Differences 
    # macOS/Linux
    curl -LsSf https://astral.sh/uv/install.sh | sh
 
-   # Or via Homebrew (recommended for macOS)
+   # Or via Homebrew (recommended for macOS with Claude Desktop)
    brew install uv
+   ```
+
+   **Important for Claude Desktop users on macOS:** Installing uv via Homebrew ensures it's in the system PATH and accessible to Claude Desktop. Other installation methods may not work with Claude Desktop.
+
+   Verify installation:
+   ```bash
+   uv --version  # Should display version number
    ```
 
 3. **R (4.0+)** with DID packages:
@@ -43,10 +50,11 @@ git clone https://github.com/cafferychen777/ChatDiD.git
 cd ChatDiD
 
 # Install with FastMCP (automatically configures Claude Desktop)
-fastmcp install claude-desktop src/chatdid_mcp/server.py --server-name "ChatDiD"
+pip install fastmcp  # Install fastmcp first
+fastmcp install claude-desktop src/chatdid_mcp/server.py --name "ChatDiD" --with-requirements requirements.txt
 ```
 
-Then restart Claude Desktop completely (quit and reopen).
+Then restart Claude Desktop completely (quit and reopen). Look for the hammer icon (🔨) to confirm the server is loaded.
 
 #### Option 2: Manual Installation
 
@@ -80,17 +88,21 @@ For more control or to use with other MCP clients (Cline, VSCode):
        "chatdid": {
          "command": "uv",
          "args": [
-           "--directory",
-           "/ABSOLUTE/PATH/TO/ChatDiD",
            "run",
+           "--with",
+           "fastmcp",
+           "--with-requirements",
+           "/ABSOLUTE/PATH/TO/ChatDiD/requirements.txt",
            "fastmcp",
            "run",
-           "src/chatdid_mcp/server.py"
+           "/ABSOLUTE/PATH/TO/ChatDiD/src/chatdid_mcp/server.py"
          ]
        }
      }
    }
    ```
+
+   **Note:** Replace `/ABSOLUTE/PATH/TO/ChatDiD` with your actual path (e.g., `/Users/yourname/ChatDiD`)
 
    **For VSCode with GitHub Copilot:**
 
@@ -101,12 +113,14 @@ For more control or to use with other MCP clients (Cline, VSCode):
        "chatdid": {
          "command": "uv",
          "args": [
-           "--directory",
-           "/ABSOLUTE/PATH/TO/ChatDiD",
            "run",
+           "--with",
+           "fastmcp",
+           "--with-requirements",
+           "/ABSOLUTE/PATH/TO/ChatDiD/requirements.txt",
            "fastmcp",
            "run",
-           "src/chatdid_mcp/server.py"
+           "/ABSOLUTE/PATH/TO/ChatDiD/src/chatdid_mcp/server.py"
          ]
        }
      }
@@ -115,7 +129,7 @@ For more control or to use with other MCP clients (Cline, VSCode):
 
    **For Cline (VSCode extension):**
 
-   Open Cline → MCP Servers → Advanced MCP Settings, then add the same configuration.
+   Open Cline → MCP Servers icon → Advanced MCP Settings, then add the same configuration above.
 
 3. Restart your MCP client completely
 
