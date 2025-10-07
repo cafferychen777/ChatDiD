@@ -134,23 +134,74 @@ Load the mpdta dataset from data/examples/mpdta.csv
 
 ## Usage Example
 
-Once connected to Claude Desktop, you can start a DID analysis:
+Once connected to Claude Desktop (or other MCP clients), you can start a DID analysis through natural conversation:
 
 ```
-User: "I want to analyze the effect of a policy change using difference-in-differences. 
-       I have panel data in a CSV file."
+User: "I want to analyze minimum wage policy effects using the mpdta dataset.
+       Can you help me run a difference-in-differences analysis?"
 
-Claude: I'll help you conduct a robust DID analysis! Let's start by loading your data.
+Claude: I'll help you conduct a robust DID analysis! Let me start by loading the data.
 
-[Claude uses the load_data tool]
+[Uses load_data tool]
 
-User: "The file is at /path/to/my/data.csv"
+✅ Data Loading Successful
+- 2,500 observations × 6 columns
+- Columns: year, countyreal, lpop, lemp, first.treat, treat
 
-Claude: [Loads data and provides summary]
-        Now let's explore the panel structure to identify your variables.
+Let me explore the panel structure to understand your data better.
 
-[Claude uses explore_data tool and continues the analysis...]
+[Uses explore_data tool]
+
+📊 Panel Structure:
+- Unit variable: countyreal
+- Time variable: year
+- Treatment: 38.2% treated
+- Suggests staggered adoption design
+
+Now let's check if standard TWFE would be problematic here.
+
+[Uses diagnose_twfe tool]
+
+⚠️ TWFE Diagnostic Results:
+- Goodman-Bacon decomposition shows 13.7% problematic comparisons
+- TWFE estimate: -0.0365
+- Recommendation: Use heterogeneity-robust estimators
+
+I'll use the Callaway & Sant'Anna estimator, which is robust to these issues.
+
+[Uses estimate_callaway_santanna]
+
+📈 Results:
+- Overall ATT: -0.0305 (SE: 0.0129)
+- 95% CI: [-0.0558, -0.0051]
+- Statistically significant (p = 0.0184)
+
+The treatment shows a significant negative effect on log employment.
+Let me create an event study plot to visualize the dynamics.
+
+[Uses create_event_study_plot]
+
+✅ Event study plot saved! The plot shows:
+- No pre-treatment trends (parallel trends assumption holds)
+- Treatment effects emerge after period 0
+- Effects grow stronger over time
+
+User: "Can you export the results?"
+
+Claude: Absolutely! I'll export both the estimates and comparison with other methods.
+
+[Uses export_results and export_comparison]
+
+✅ Results exported to CSV, Excel, and LaTeX formats!
 ```
+
+This interactive workflow demonstrates how ChatDiD guides you through:
+1. **Data loading** with automatic structure detection
+2. **Diagnostics** to identify TWFE bias
+3. **Method selection** based on data characteristics
+4. **Robust estimation** with heterogeneity-robust estimators
+5. **Visualization** with publication-ready plots
+6. **Export** in multiple formats
 
 ## Available Tools
 
