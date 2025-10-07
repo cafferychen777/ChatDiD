@@ -1,0 +1,449 @@
+<!doctype html>
+<html class="no-js" lang="en">
+  <head>
+    <title>404 Page not found | Stata Press</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="keywords" content="page not found" />
+    <meta name="robots" content="" />
+
+
+
+    <link rel="stylesheet" href="/includes/foundation.css" />
+    <link rel="stylesheet" href="/includes/home.css" />
+    <link rel="stylesheet" href="/includes/spstyle2015.css" />
+    <link rel="stylesheet" href="/includes/books.css" />
+    <link rel="stylesheet" href="/includes/bookcatalog.css" />
+    <link rel="stylesheet" href="/includes/mods.css" />
+    <link rel="stylesheet" href="/includes/bookpage.css" />
+    <link rel="stylesheet" type="text/css" href="/includes/slick/slick.css"/>
+    <link rel="stylesheet" type="text/css" href="/includes/slick/slick-theme.css"/>
+    <link rel="stylesheet" href="/includes/carousels.css" />
+    <link rel="stylesheet" href="//maxcdn.bootstrapcdn.com/font-awesome/4.5.0/css/font-awesome.min.css">
+    <link rel="icon" type="image/png" href="//www.stata-press.com/i/statapress_favicon.png">
+    <script src="/js/vendor/modernizr.js"></script>
+    <script src="/includes/little_window.js"></script>
+    <script src="/includes/cartScripts.js"></script>
+    <script src="/includes/toggle.js"></script>
+  <script src="/js/vendor/jquery.js"></script>
+  <script src="/js/foundation/foundation.js"></script>
+  <script src="/js/foundation/foundation.reveal.js"></script>
+
+    <script type="text/javascript">
+
+    function swapImg(id, newSrc) {
+	    var theImage = locateImage(id);
+	    if (theImage) {
+		    theImage.src = newSrc;
+	    }
+    }
+    
+    function locateImage(name) {
+	    var theImage = false;
+	    if (document.images) {
+		    theImage = document.images[name];
+	    }
+	    if (theImage) {
+		    return theImage;
+	    }
+	    return (false);
+    }
+    </script>
+
+<!--OLD Google tag-->
+    <script>
+      (function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+      (i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+      m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+      })(window,document,'script','//www.google-analytics.com/analytics.js','ga');
+    
+      ga('create', 'UA-9407990-4', 'auto');
+      ga('send', 'pageview');
+   
+      gtag('config', 'AW-985213821'); 
+    </script>
+    <script>
+      gtag('event', 'conversion', {
+          'send_to': 'AW-985213821/l5CrCP_q6IABEP3W5NUD',
+          'transaction_id': ''
+      });
+    </script>
+
+<!-- NEW Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-755VH2N393"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'G-755VH2N393');
+</script>
+
+
+    <script type="text/javascript" src="//cdn.mathjax.org/mathjax/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
+  <!-- PUT EXTRA SCRIPTS AND CSS HERE -->
+
+
+  <!-- END EXTRA SCRIPTS AND CSS -->
+    </head>
+  <body>
+        <div class="wrapper">
+
+<div class="off-canvas-wrap" data-offcanvas>
+<div class="inner-wrap">
+
+    <!-- Off Canvas Menu -->
+    <aside class="left-off-canvas-menu" style="height: 100%; min-height: 100%;">
+        <!-- whatever you want goes here -->
+
+        <nav id="sideNav">
+        <ul class="off-canvas-list">
+          <li><a href="/">Home</a></li>
+          <li><a href="/books/">Catalog</a>
+    <ul style="list-style-type: none;">
+        <li><a href="/books/">Books</a></li>
+        <li><a href="/ebooks/">eBooks</a></li>
+        <li><a href="/manuals/documentation-set/">Stata documentation</a></li>
+        <li><a href="/journals/">Stata Journal</a></li>
+    </ul></li>
+    <li><a href="/data/">Datasets</a></li>
+    <li><a href="/authors/">Resources</a>
+    <ul>
+        <li><a href="/authors/">Authors</a>
+            <ul style="list-style-type: none;">
+                <li><a href="/authors/publish-with-stata-press/">Publish with Stata Press</a></li>
+                <li><a href="/author-support/">Author&nbsp;Support&nbsp;Program</a></li>
+            </ul></li>
+        <li><a href="/editor-support/">Editors</a>
+            <ul style="list-style-type: none;">
+                <li><a href="/editor-support/">Editor&nbsp;Support&nbsp;Program</a></li>
+            </ul></li>
+        <li><a href="/instructors/">Instructors</a>
+            <ul style="list-style-type: none;">
+                <li style="min-width:200px;"><a href="/instructors/#teach">Teaching resources</a></li>
+                <li style="min-width:200px;"><a href="/inclusive-access/">Inclusive Access</a></li>
+            </ul></li>
+        <li><a href="/booksellers/">Booksellers</a></li>
+        <li><a href="/accessibility/">Accessibility</a></li>
+        <li><a href="/ebsco-ebooks/">EBSCO</a></li>
+    </ul></li>
+          <li><a href="/forthcoming/">Forthcoming</a></li>
+          <li><a href="/contact/">Contact us</a></li>
+          <li><a href="//www.stata.com/store/checkout/cart/">View cart</a></li>
+          <a href="#target" class="scroll"><li style="height: 100%;">&nbsp;</li></a>
+        </ul>
+	</nav>
+    </aside>
+
+  <section class="main-section" id="target">
+
+     <div style="background-color:#555555">
+       <div style="background-color:#555555" id="menu2" data-magellan-expedition="fixed">
+
+
+        <nav id="mobileNav" style="background-color:#555555;">
+            <p><a id="menuToggle" class="left-off-canvas-toggle" href="#" ><span class="fa fa-bars fa-lg" style="color:#DCE1E4"></span></a></p>
+	        <div style="display: inline-block; float: center;" align="center">
+	  <form METHOD="GET" ACTION="//www.stata.com/gsearch.php" style="border: none; margin: 0px; padding: 0px; background: none;">
+	  <input type="text" style="height: 20px; margin: 0px; display: inline-block;" name="q">
+	        <input type="hidden" name="site" value="stata">
+        	<input type="hidden" name="client" value="stata">
+        	<input type="hidden" name="proxystylesheet" value="stata">
+        	<input type="hidden" name="output" value="xml_no_dtd">
+        	<input type="hidden" name="restrict" value="SP">
+	  <button type="submit" style="margin: 0px; padding: 0px;"><span class="fa fa-search fa-lg" style="color:#DCE1E4"> </span></button>
+	  </form>
+	        </div>
+            <a href="/"><img src="/img/pressbug-icon.png" style="float: right; height: 30px; margin:8px 8px 8px 0px;"></a>
+        </nav>
+
+
+
+        <nav id="desktopNav">
+<div class="logo">
+<a href="/">
+<img src="/img/pressbug-60px.png" class="hideUnder640" alt="Stata Press" border="0" width="40px" style="margin: 3px 10px 3px 15px;">
+
+<img src="/img/presslogo-horz.png" alt="Stata Press" border="0" width="190px" style="margin: auto 30px auto 0px;">
+</a>
+</div>
+
+<div id="menu">
+<table><tr><td>
+<span class="mainitem"><a href="/books/">Catalog</a><br /><div>
+    <span class="categories" style="margin-left: -300px; width:100%;max-width:150px">
+    <a href="/books/">Books</a><br />
+    <p class="substuff">
+      <a href="/ebooks/">eBooks</a><br />
+    </p>
+    </span>
+    <span class="categories">
+    <a href="/manuals/documentation-set/">Stata documentation</a><br /><br />
+    <a href="/journals/">Stata Journal</a><br />
+    </span>
+</div>
+</td>
+<td>
+<span class="mainitem"><a href="/data/">Datasets</a>
+</td>
+<td>
+<span class="mainitem"><a href="/authors/">Resources</a><br /><div>
+    <span class="categories">
+    <a href="/authors/">Authors</a><br />
+    <p class="substuff">
+      <a href="/authors/publish-with-stata-press/">Publish with Stata Press</a><br />
+      <a href="/author-support/">Author&nbsp;Support&nbsp;Program</a><br />
+    </p>
+    </span>
+    <span class="categories">
+    <a href="/editor-support/">Editors</a><br />
+    <p class="substuff">
+      <a href="/editor-support/">Editor&nbsp;Support&nbsp;Program</a><br />
+    </p>
+    </span>
+    <span class="categories">
+    <a href="/instructors/">Instructors</a><br />
+    <p class="substuff">
+      <a href="/instructors/#teach">Teaching resources</a><br />
+      <a href="/inclusive-access/">Inclusive Access</a><br />
+    </p>
+    </span>
+    <span class="categories" style="width:100%;max-width:150px">
+    <a href="/booksellers/">Booksellers</a><br /><br />
+    <a href="/accessibility/">Accessibility</a><br /> <br />
+    <a href="/ebsco-ebooks/">EBSCO</a><br />
+    </span>
+</div>
+</td>
+<td>
+<span class="mainitem"><a href="/forthcoming/">Forthcoming</a>
+</td>
+<td>
+<span class="mainitem"><a href="/contact/">Contact us</a>
+</td>
+<td>
+<span class="mainitem"><a href="//www.stata.com/store/checkout/cart/">View cart</a>
+</td>
+</tr>
+</table>
+</div>
+
+        <div class="hideUnder640Search"  style="margin: 10px 30px 0px 0px;">
+          <form METHOD="GET" ACTION="//www.stata.com/gsearch.php" style="border: none; margin: 0px; padding: 0px; background-color: #555555">
+          <input type="text" style="height: 25px; width: 150px; margin: 0px; display: inline-block; padding: 0px 4px;" name="q">
+                <input type="hidden" name="site" value="stata">
+                <input type="hidden" name="client" value="stata">
+                <input type="hidden" name="proxystylesheet" value="stata">
+                <input type="hidden" name="output" value="xml_no_dtd">
+                <input type="hidden" name="restrict" value="SP">
+          <button type="submit" style="margin: 0px; padding: 5px;"><span class="fa fa-search fa-lg" style="color:#FFFFFF"> </span></button>
+          </form>
+        </div>
+
+        </nav>
+      </div>
+    </div>
+
+<!--BEGIN CONTENT WRAP-->
+<div class="wrapper">
+
+<div class="row" style="padding: 10px 10px 0px;">
+
+
+<p>
+<h2>
+The page you requested, https://www.stata-press.com/data/r17/njmin3.dta, was not found.
+</h2>
+
+It is possible you typed the address incorrectly, or that the page no longer
+exists.  As an option, try searching for the requested page or if you would 
+like to report an error, send email to 
+<a href="/cdn-cgi/l/email-protection#a1d6c4c3ccc0d2d5c4d3e1d2d5c0d5c08fc2cecc"><span class="__cf_email__" data-cfemail="1d6a787f707c6e69786f5d6e697c697c306d6f786e6e337e7270">[email&#160;protected]</span></a>.
+
+<hr>
+
+<form action="//www.stata.com/gsearch.php" method="GET">
+<br>
+<b>Simple search</b> | <a href="//www.stata.com/search/advanced/?restrict=SP">Advanced search</a>
+<p>
+Search for: <INPUT TYPE="text" NAME="q" SIZE=50 VALUE="">
+<INPUT TYPE="submit" VALUE="Search!" class="alert button"><p>
+Search for related pages on
+<select name="restrict">
+<OPTION VALUE="SJ">Stata Journal
+<OPTION VALUE="SP" selected>Stata Press
+<OPTION VALUE="SL">Statalist
+<OPTION VALUE="ALL">All Stata Sites
+</select>
+<input type="hidden" name="site" value="stata">
+<input type="hidden" name="client" value="stata">
+<input type="hidden" name="proxystylesheet" value="stata">
+<input type="hidden" name="output" value="xml_no_dtd">
+
+</form>
+<HR>
+
+
+</div> <!--END OFF CANVAS WRAP-->
+
+            <div class="push"></div>
+            
+        </div>
+<!--END CONTENT WRAP-->
+
+</div>  <!--end of mobile menu-->
+</div>
+
+        </div>
+            <div class="push" style="margin: 0px; padding: 0px;"></div>
+        </div> 
+        <div class="footer" id="home" style="margin-top: -3px;">
+
+<div class="large-12 columns" style="background-color:#333333; color:#DCE1E4; padding:5px 50px; text-align:center; font-size:13px; ">
+
+
+<ul class="large-block-grid-4 medium-block-grid-2 small-block-grid-1" style="padding-top:15px; text-align:left">
+<li>
+
+<a href="/">
+<img src="/img/pressbug-60px.png" alt="Stata Press logo" border="0" style="margin-left: auto; margin-right: auto; margin:0px 0px 15px 0px; display:inline" height="40" width="40">
+
+<img src="/img/presslogo-horz.png" alt="Stata Press logo" border="0" style="margin-left: auto; margin-right: auto; margin:10px 5px 25px 5px; display:inline" height="30" width="192">
+</a>
+
+<p id="smalltext" style="max-width:250px">
+Stata Press, a division of StataCorp LLC, publishes books, manuals, and journals about Stata and general statistics topics for professional researchers of all disciplines.
+</p>
+</li>
+
+<li><h5 style="display:inline; color:#2daeff">Contact us</h5>
+<p id="smalltext">
+Stata Press<br />
+4905 Lakeway Drive <br />
+College Station, TX 77845, USA
+</p>
+
+<p id="smalltext">
+979.696.4600 &nbsp;
+<span class="fa fa-phone fa-lg" style="color:#DCE1E4"> </span><br />
+<a href="/cdn-cgi/l/email-protection#85f6e0f7f3ece6e0c5f6f1e4f1e4a8f5f7e0f6f6abe6eae8"><span class="__cf_email__" data-cfemail="ff8c9a8d89969c9abf8c8b9e8b9ed28f8d9a8c8cd19c9092">[email&#160;protected]</span></a> &nbsp;
+<span class="fa fa-envelope fa-lg" style="color:#DCE1E4"> </span> 
+</p>
+</li>
+
+<li><h5 style="display:inline; color:#2daeff">Links</h5>
+<p id="smalltext">
+<a href="/catalog/">Books</a><br />
+<a href="/data/">Datasets</a><br />
+<a href="/authors/">Authors</a> <br />
+<a href="/instructors/">Instructors</a> <br />
+<a href="/whats-new/">What's new</a> <br />
+<a href="/accessibility/">Accessibility</a><br />
+<br />
+<a href="http://www.stata.com/">www.stata.com</a> <br />
+<a href="http://www.stata-journal.com/">www.stata-journal.com</a> 
+</p>
+
+
+</li>
+
+<li id="grow"><h5 style="display:inline; color:#2daeff">Connect</h5> <br />
+<p id="smalltext">
+
+
+<a target="_blank" href="https://facebook.com/StataCorp">
+<img src="/img/facebook.png" alt="Facebook" border="0" style="margin-left: auto; margin-right: auto; margin:10px 5px 15px 0px; display:inline" height="30" width="30">
+</a>
+
+<a target="_blank" href="https://twitter.com/Stata">
+<img src="/img/twitter.png" alt="Twitter" border="0" style="margin-left: auto; margin-right: auto; margin:10px 5px 15px 0px; display:inline" height="30" width="30">
+</a>
+
+<a target="_blank" href="https://www.linkedin.com/company/statacorp">
+<img src="/img/linkedin.png" alt="LinkedIn" border="0" style="margin-left: auto; margin-right: auto; margin:10px 5px 15px 0px; display:inline" height="30" width="30">
+</a>
+
+<a target="_blank" href="https://www.youtube.com/user/statacorp">
+<img src="/img/youtube.png" alt="YouTube" border="0" style="margin-left: auto; margin-right: auto; margin:10px 5px 15px 0px; display:inline" height="30" width="30">
+</a>
+
+<a target="_blank" href="http://blog.stata.com/">
+<img src="/img/blog.png" alt="Stata Blog" border="0" style="margin-left: auto; margin-right: auto; margin:10px 5px 15px 0px; display:inline" height="30" width="30">
+</a>
+
+<a target="_blank" href="https://www.instagram.com/statacorp/">
+<img src="/img/insta.png" alt="Instagram" border="0" style="margin-left: auto; margin-right: auto; margin:10px 5px 15px 0px; display:inline" height="30" width="30">
+</a>
+
+<br />
+<a href="/email-alert/">Sign up for email alerts</a>
+<br />
+<br />
+
+  <a href="#target" class="scroll">Scroll to top</a>
+</p>
+
+</li>
+
+</ul>
+
+
+</div>
+
+<div class="large-12 columns" style="background-color:#000000; color:#DCE1E4; padding:5px 50px; text-align:center; font-size:13px; ">
+&copy; 2002&ndash;2025 StataCorp LLC  &nbsp; | &nbsp;
+<a href="/terms-of-use/">Terms of use</a>  &nbsp; | &nbsp;
+<a href="/privacy-policy/">Privacy notice</a>  &nbsp; | &nbsp;
+<a href="http://www.stata.com/careers/">Careers</a>  &nbsp; | &nbsp;
+<a href="http://www.stata.com/order/money-back-guarantee/">Returns</a> &nbsp; | &nbsp;
+<a href="/siteindex.html">Site index</a>
+</div>
+
+</div>
+
+
+
+    <script data-cfasync="false" src="/cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js"></script><script src="/js/vendor/jquery.js"></script>
+    <script src="/js/foundation.min.js"></script>
+    <script src="/js/foundation/foundation.js"></script>
+    <script src="/js/foundation/foundation.offcanvas.js"></script>
+    <script src="/js/foundation/foundation.magellan.js"></script>
+    <script type="text/javascript" src="/includes/slick/slick.min.js"></script>
+    <script src="/js/foundation/foundation.tab.js"></script>
+    <script>
+
+	var highest = 0,
+	columns = $('.match-height');
+	columns.each(function(){
+	   var currColumnHeight = $(this).outerHeight();
+	   if (currColumnHeight > highest) {
+	      highest = currColumnHeight;
+	   }
+	});
+	columns.css('height', highest);
+      $(document).foundation();
+      $(document).ready(function(){
+	$('.autoplay').slick({
+	  slidesToShow: 1,
+	  slidesToScroll: 1,
+	  autoplay: true,
+	  autoplaySpeed: 10000,
+        });
+      });
+        $(document).foundation();
+        $(document).foundation('tab', 'reflow');
+
+
+$(document).ready(function(){
+$(function(){$(".scroll").click(function(){
+      $("html,body").animate({
+        scrollTop:$("#target").offset().top
+      },"500");
+      return false
+  })
+})
+
+})
+    </script>
+  </body>
+</html>   
