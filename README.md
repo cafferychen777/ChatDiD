@@ -85,8 +85,8 @@ For more control or to use with other MCP clients (Cline, VSCode):
    ```json
    {
      "mcpServers": {
-       "chatdid": {
-         "command": "uv",
+       "ChatDiD": {
+         "command": "/ABSOLUTE/PATH/TO/uv",
          "args": [
            "run",
            "--with",
@@ -102,7 +102,12 @@ For more control or to use with other MCP clients (Cline, VSCode):
    }
    ```
 
-   **Note:** Replace `/ABSOLUTE/PATH/TO/ChatDiD` with your actual path (e.g., `/Users/yourname/ChatDiD`)
+   **Important Notes:**
+   - Replace `/ABSOLUTE/PATH/TO/ChatDiD` with your actual ChatDiD path (e.g., `/Users/yourname/ChatDiD`)
+   - Replace `/ABSOLUTE/PATH/TO/uv` with your uv installation path:
+     - Run `which uv` to find the path (commonly `/Users/yourname/.local/bin/uv` on macOS)
+     - Or use full Homebrew path: `/opt/homebrew/bin/uv` (Apple Silicon) or `/usr/local/bin/uv` (Intel Mac)
+   - All paths must be absolute, not relative
 
    **For VSCode with GitHub Copilot:**
 
