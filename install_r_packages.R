@@ -34,6 +34,7 @@ check_and_install("fixest", "Sun & Abraham (2021)")
 check_and_install("didimputation", "Borusyak, Jaravel & Spiess (2024)")
 check_and_install("did2s", "Gardner (2022)")
 check_and_install("DIDmultiplegt", "de Chaisemartin & D'Haultfoeuille (2020)")
+check_and_install("DIDmultiplegtDYN", "de Chaisemartin & D'Haultfoeuille (2020) - Modern")
 check_and_install("staggered", "Roth & Sant'Anna (2023) Efficient Estimator")
 
 cat("\n== Diagnostic Tools ==\n")
@@ -44,10 +45,6 @@ cat("\n== Robustness & Sensitivity ==\n")
 check_and_install("HonestDiD", "Rambachan & Roth (2023) Sensitivity Analysis")
 check_and_install("pretrends", "Roth (2022) Power Analysis")
 
-cat("\n== Optional Packages ==\n")
-# Modern version of dCDH - recommended but not critical
-check_and_install("DIDmultiplegtDYN", "Modern dCDH Dynamic Estimator (recommended)")
-
 cat("\n========================================\n")
 cat("Installation Summary\n")
 cat("========================================\n")
@@ -55,7 +52,7 @@ cat("========================================\n")
 # Verify all critical packages
 critical_packages <- c(
   "did", "fixest", "didimputation", "did2s",
-  "DIDmultiplegt", "staggered",
+  "DIDmultiplegt", "DIDmultiplegtDYN", "staggered",
   "bacondecomp", "TwoWayFEWeights",
   "HonestDiD", "pretrends"
 )
@@ -79,14 +76,6 @@ if (all(installed)) {
   cat(sprintf('install.packages(c("%s"))\n\n', paste(missing, collapse = '", "')))
 }
 
-# Check optional packages
-cat("Optional packages:\n")
-if (requireNamespace("DIDmultiplegtDYN", quietly = TRUE)) {
-  cat("  ✓ DIDmultiplegtDYN installed\n")
-} else {
-  cat("  - DIDmultiplegtDYN not installed (optional)\n")
-}
-
 cat("\n========================================\n")
 cat("Package Descriptions\n")
 cat("========================================\n")
@@ -96,7 +85,8 @@ Core Estimators:
   • fixest           - Sun & Abraham interaction-weighted estimator
   • didimputation    - Borusyak, Jaravel & Spiess imputation estimator
   • did2s            - Gardner two-stage estimator
-  • DIDmultiplegt    - de Chaisemartin & D'Haultfoeuille estimator
+  • DIDmultiplegt    - de Chaisemartin & D'Haultfoeuille estimator (legacy)
+  • DIDmultiplegtDYN - de Chaisemartin & D'Haultfoeuille estimator (modern)
   • staggered        - Roth & Sant'Anna efficient estimator
 
 Diagnostics:
@@ -106,9 +96,6 @@ Diagnostics:
 Robustness:
   • HonestDiD        - Rambachan & Roth (2023) sensitivity analysis
   • pretrends        - Roth (2022) pre-trends power analysis
-
-Optional:
-  • DIDmultiplegtDYN - Modern dynamic dCDH estimator (recommended)
 \n")
 
 cat("For more information, see:\n")
