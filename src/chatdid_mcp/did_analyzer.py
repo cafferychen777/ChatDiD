@@ -330,8 +330,7 @@ class DiDAnalyzer:
                 outcome_col=self.config['outcome_col'],
                 unit_col=self.config['unit_col'],
                 time_col=self.config['time_col'],
-                treatment_col=self.config['treatment_col'],
-                cohort_col=self.config.get('cohort_col'),
+                cohort_col=self.config.get('cohort_col', self.config['treatment_col']),
                 **kwargs
             )
         elif method == "dcdh":
