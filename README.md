@@ -152,6 +152,50 @@ For more control or to use with other MCP clients (Cline, VSCode):
 
    Open Cline → MCP Servers icon → Advanced MCP Settings, then add the same configuration above.
 
+   **For Claude Code:**
+
+   You can configure ChatDiD MCP server using either the CLI or by editing the configuration file:
+
+   **Method 1: Using CLI (Recommended)**
+   ```bash
+   # Add ChatDiD with user scope (available in all projects)
+   claude mcp add --transport stdio --scope user ChatDiD -- \
+     uv run --project /ABSOLUTE/PATH/TO/ChatDiD --with fastmcp \
+     fastmcp run /ABSOLUTE/PATH/TO/ChatDiD/src/chatdid_mcp/server.py
+
+   # Verify installation
+   claude mcp list
+   ```
+
+   **Method 2: Direct Configuration File Edit**
+
+   Edit `~/.claude.json` (create if it doesn't exist):
+   ```json
+   {
+     "mcpServers": {
+       "ChatDiD": {
+         "command": "uv",
+         "args": [
+           "run",
+           "--project",
+           "/ABSOLUTE/PATH/TO/ChatDiD",
+           "--with",
+           "fastmcp",
+           "fastmcp",
+           "run",
+           "/ABSOLUTE/PATH/TO/ChatDiD/src/chatdid_mcp/server.py"
+         ]
+       }
+     }
+   }
+   ```
+
+   **Important Notes for Claude Code:**
+   - Replace `/ABSOLUTE/PATH/TO/ChatDiD` with your actual ChatDiD directory path
+   - Use `--scope user` for personal tools available across all projects
+   - Use `--scope project` to share with your team (creates `.mcp.json` in project root)
+   - After configuration, restart Claude Code or run `claude mcp list` to verify
+
 3. Restart your MCP client completely
 
 ### Troubleshooting Installation
