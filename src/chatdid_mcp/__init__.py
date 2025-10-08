@@ -9,6 +9,8 @@ __version__ = "1.0.0"
 __author__ = "ChatDiD Team"
 __email__ = "team@chatdid.com"
 
-from .server import main
+# For FastMCP 2.0, the mcp instance is exported from server.py
+# FastMCP CLI will automatically discover and use it
+from .server import mcp
 
-__all__ = ["main"]
+__all__ = ["mcp"]

@@ -5,14 +5,13 @@ This module implements the core MCP server that provides tools and resources
 for interactive Difference-in-Differences analysis using FastMCP 2.0.
 """
 
-import asyncio
 import json
 import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 import numpy as np
 
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 
 # Handle imports for both module and script execution
 import sys
@@ -3148,11 +3147,5 @@ def _format_comparison_as_csv(comparison_data: Dict[str, Dict], include_diagnost
 # MAIN ENTRY POINT
 # =============================================================================
 
-def main():
-    """Main entry point for the MCP server."""
-    logger.info("Starting ChatDiD MCP Server...")
-    mcp.run(transport="stdio")
-
-
-if __name__ == "__main__":
-    main()
+# When using FastMCP CLI (fastmcp run), no explicit main() is needed
+# FastMCP automatically handles the server lifecycle and asyncio event loop
