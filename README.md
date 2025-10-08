@@ -105,10 +105,10 @@ For more control or to use with other MCP clients (Cline, VSCode):
          "command": "/ABSOLUTE/PATH/TO/uv",
          "args": [
            "run",
+           "--project",
+           "/ABSOLUTE/PATH/TO/ChatDiD",
            "--with",
            "fastmcp",
-           "--with-requirements",
-           "/ABSOLUTE/PATH/TO/ChatDiD/requirements.txt",
            "fastmcp",
            "run",
            "/ABSOLUTE/PATH/TO/ChatDiD/src/chatdid_mcp/server.py"
@@ -135,10 +135,10 @@ For more control or to use with other MCP clients (Cline, VSCode):
          "command": "uv",
          "args": [
            "run",
+           "--project",
+           "/ABSOLUTE/PATH/TO/ChatDiD",
            "--with",
            "fastmcp",
-           "--with-requirements",
-           "/ABSOLUTE/PATH/TO/ChatDiD/requirements.txt",
            "fastmcp",
            "run",
            "/ABSOLUTE/PATH/TO/ChatDiD/src/chatdid_mcp/server.py"
