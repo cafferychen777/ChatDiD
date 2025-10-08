@@ -17,19 +17,29 @@ A Model Context Protocol (MCP) server for interactive Difference-in-Differences 
 1. **Python 3.10+** - Required for MCP SDK
 
 2. **uv package manager** - Required for dependency management:
-   ```bash
-   # macOS/Linux
-   curl -LsSf https://astral.sh/uv/install.sh | sh
 
-   # Or via Homebrew (recommended for macOS with Claude Desktop)
+   **⚠️ CRITICAL for Claude Desktop users on macOS:**
+
+   You **MUST** install uv via Homebrew (not curl) to ensure Claude Desktop can find it:
+
+   ```bash
+   # Required method for Claude Desktop
    brew install uv
    ```
 
-   **Important for Claude Desktop users on macOS:** Installing uv via Homebrew ensures it's in the system PATH and accessible to Claude Desktop. Other installation methods may not work with Claude Desktop.
+   **Why Homebrew?** Claude Desktop runs in an isolated environment and can only find `uv` if it's installed via Homebrew (which places it in `/opt/homebrew/bin/` or `/usr/local/bin/`).
+
+   **Already installed uv with curl?** Create a symlink to make it accessible:
+   ```bash
+   # If you installed with: curl -LsSf https://astral.sh/uv/install.sh | sh
+   # Run this to fix it:
+   sudo ln -s ~/.local/bin/uv /usr/local/bin/uv
+   ```
 
    Verify installation:
    ```bash
    uv --version  # Should display version number
+   which uv      # Should show /opt/homebrew/bin/uv or /usr/local/bin/uv
    ```
 
 3. **R (4.0+)** with DID packages:
@@ -49,12 +59,18 @@ The easiest way to install ChatDiD in Claude Desktop:
 git clone https://github.com/cafferychen777/ChatDiD.git
 cd ChatDiD
 
+# IMPORTANT: Verify uv is installed correctly FIRST
+which uv  # Should show /opt/homebrew/bin/uv or /usr/local/bin/uv
+# If not, run: brew install uv
+
 # Install with FastMCP (automatically configures Claude Desktop)
 pip install fastmcp  # Install fastmcp first
-fastmcp install claude-desktop src/chatdid_mcp/server.py --name "ChatDiD" --with-requirements requirements.txt
+fastmcp install claude-desktop src/chatdid_mcp/server.py --name "ChatDiD" --project $(pwd)
 ```
 
 Then restart Claude Desktop completely (quit and reopen). Look for the hammer icon (🔨) to confirm the server is loaded.
+
+**If you see "Server disconnected" error**, see the [Troubleshooting](#troubleshooting-installation) section below.
 
 #### Option 2: Manual Installation
 
@@ -137,6 +153,43 @@ For more control or to use with other MCP clients (Cline, VSCode):
    Open Cline → MCP Servers icon → Advanced MCP Settings, then add the same configuration above.
 
 3. Restart your MCP client completely
+
+### Troubleshooting Installation
+
+#### Error: "spawn uv ENOENT" or "Server disconnected"
+
+This is the most common installation error. It means Claude Desktop cannot find the `uv` command.
+
+**Quick Fix:**
+
+1. Check your uv installation:
+   ```bash
+   which uv
+   ```
+
+2. If it shows `~/.local/bin/uv`:
+   ```bash
+   # Create symlink to make it accessible to Claude Desktop
+   sudo ln -s ~/.local/bin/uv /usr/local/bin/uv
+   ```
+
+3. If uv is not installed, install it with Homebrew:
+   ```bash
+   brew install uv
+   ```
+
+4. Restart Claude Desktop completely (Cmd+Q to quit, then reopen)
+
+**Still not working?** Check the logs:
+```bash
+# Open logs folder
+open ~/Library/Logs/Claude/
+
+# Look for mcp-server-ChatDiD.log and check for errors
+tail -50 ~/Library/Logs/Claude/mcp-server-ChatDiD.log
+```
+
+See [docs/FASTMCP_TROUBLESHOOTING.md](docs/FASTMCP_TROUBLESHOOTING.md) for detailed troubleshooting guide.
 
 ### Verifying Installation
 
