@@ -76,17 +76,38 @@ class DiDAnalyzer:
         """Setup R packages for DID analysis."""
         try:
             # Install and load required R packages
+            # Core estimators
             r_packages = [
-                "did", "bacondecomp", "fixest", "didimputation", 
-                "did2s", "TwoWayFEWeights", "HonestDiD", "pretrends"
+                "did",              # Callaway & Sant'Anna
+                "fixest",           # Sun & Abraham
+                "didimputation",    # BJS imputation
+                "did2s",            # Gardner two-stage
+                "DIDmultiplegt",    # de Chaisemartin & D'Haultfoeuille
+                "staggered",        # Roth & Sant'Anna efficient estimator
+                "bacondecomp",      # Goodman-Bacon decomposition
+                "TwoWayFEWeights",  # TWFE weights analysis
+                "HonestDiD",        # Sensitivity analysis
+                "pretrends"         # Power analysis
             ]
-            
+
+            # Optional packages (won't fail if missing)
+            optional_packages = [
+                "DIDmultiplegtDYN"  # Modern dCDH dynamic estimator
+            ]
+
             for package in r_packages:
                 try:
                     importr(package)
                     logger.info(f"Loaded R package: {package}")
                 except Exception as e:
                     logger.warning(f"Could not load R package {package}: {e}")
+
+            for package in optional_packages:
+                try:
+                    importr(package)
+                    logger.info(f"Loaded optional R package: {package}")
+                except Exception as e:
+                    logger.info(f"Optional R package {package} not available: {e}")
                     
         except Exception as e:
             logger.error(f"Error setting up R packages: {e}")
