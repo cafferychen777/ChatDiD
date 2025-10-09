@@ -28,6 +28,10 @@ openpyxl>=3.1.0
 xlrd>=2.0.0
 pyreadstat>=1.2.0  # For Stata files
 
+# Cross-platform directory paths (optional but recommended for Windows/Linux)
+# Provides proper localized folder paths (Documents, Downloads, etc.)
+platformdirs>=4.0.0
+
 # Development dependencies (optional)
 pytest>=7.0.0
 pytest-asyncio>=0.21.0

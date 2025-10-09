@@ -99,10 +99,74 @@ class DiDAnalyzer:
                     logger.info(f"Loaded R package: {package}")
                 except Exception as e:
                     logger.warning(f"Could not load R package {package}: {e}")
-                    
+
         except Exception as e:
             logger.error(f"Error setting up R packages: {e}")
-    
+
+    def prepare_data_for_estimation(
+        self,
+        unit_col: str,
+        time_col: str,
+        treatment_col: str,
+        cohort_col: Optional[str] = None
+    ) -> Dict[str, str]:
+        """
+        Prepare data for DID estimation by auto-creating necessary variables.
+
+        This method is idempotent - calling it multiple times is safe.
+
+        Creates:
+        - cohort_auto: Numeric cohort variable from binary treatment (if needed)
+        - unit_id_numeric: Numeric unit ID from string unit names (if needed)
+
+        Args:
+            unit_col: Unit identifier column name
+            time_col: Time variable column name
+            treatment_col: Treatment indicator column name
+            cohort_col: Optional cohort variable name (if provided, will be used)
+
+        Returns:
+            Dict with actual column names to use:
+            - unit_col: Actual unit column (may be unit_id_numeric if converted)
+            - cohort_col: Actual cohort column (may be cohort_auto if created)
+        """
+        if self.data is None:
+            raise ValueError("No data loaded. Please load data first.")
+
+        data = self.data
+        actual_unit_col = unit_col
+        actual_cohort_col = cohort_col
+
+        # Auto-create cohort variable if needed
+        if not cohort_col or cohort_col not in data.columns:
+            # Check if cohort_auto already exists
+            if 'cohort_auto' not in data.columns:
+                treatment_by_unit_time = data.groupby([unit_col, time_col])[treatment_col].first().reset_index()
+                first_treated = treatment_by_unit_time[treatment_by_unit_time[treatment_col] == 1].groupby(unit_col)[time_col].min()
+
+                self.data['cohort_auto'] = self.data[unit_col].map(first_treated).fillna(0).astype(int)
+                logger.info(f"Auto-created cohort variable 'cohort_auto' from binary treatment")
+
+            actual_cohort_col = 'cohort_auto'
+            self.config['cohort_col'] = actual_cohort_col
+
+        # Auto-create numeric unit ID if needed
+        if data[unit_col].dtype == 'object':
+            # Check if unit_id_numeric already exists
+            if 'unit_id_numeric' not in data.columns:
+                unit_id_map = {name: idx for idx, name in enumerate(data[unit_col].unique())}
+                self.data['unit_id_numeric'] = self.data[unit_col].map(unit_id_map)
+                logger.info(f"Auto-created numeric unit ID 'unit_id_numeric' from string '{unit_col}'")
+
+            actual_unit_col = 'unit_id_numeric'
+            self.config['unit_col'] = actual_unit_col
+            self.config['unit_col_original'] = unit_col
+
+        return {
+            'unit_col': actual_unit_col,
+            'cohort_col': actual_cohort_col
+        }
+
     async def load_data(
         self, 
         file_path: str, 
@@ -346,14 +410,23 @@ class DiDAnalyzer:
                 **kwargs
             )
         elif method == "efficient":
-            return self.r_estimators.efficient_estimator(
-                data=self.data,
-                outcome_col=self.config['outcome_col'],
-                unit_col=self.config['unit_col'],
-                time_col=self.config['time_col'],
-                cohort_col=self.config.get('cohort_col', self.config['treatment_col']),
-                **kwargs
-            )
+            # ⚠️ EFFICIENT ESTIMATOR IS DISABLED ⚠️
+            logger.warning("Efficient estimator is disabled due to systematic issues. Falling back to imputation_bjs.")
+            return {
+                "status": "error",
+                "message": "⚠️ Efficient Estimator is DISABLED due to systematic issues across multiple datasets. "
+                           "Use Callaway & Sant'Anna, BJS Imputation, or Gardner Two-Stage instead. "
+                           "See KNOWN_ISSUES.md for details."
+            }
+            # Original code below is disabled
+            # return self.r_estimators.efficient_estimator(
+            #     data=self.data,
+            #     outcome_col=self.config['outcome_col'],
+            #     unit_col=self.config['unit_col'],
+            #     time_col=self.config['time_col'],
+            #     cohort_col=self.config.get('cohort_col', self.config['treatment_col']),
+            #     **kwargs
+            # )
         elif method == "gsynth":
             return self.r_estimators.gsynth_estimator(
                 data=self.data,

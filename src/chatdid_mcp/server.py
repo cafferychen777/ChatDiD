@@ -63,6 +63,87 @@ def get_storage():
     return storage_manager
 
 
+def _preprocess_did_columns(
+    idname: str,
+    tname: str,
+    gname: str,
+    analyzer: Optional[DiDAnalyzer] = None
+) -> Dict[str, str]:
+    """
+    Universal preprocessing helper for DID estimation methods.
+
+    Auto-detects and converts:
+    - String unit IDs → numeric unit_id_numeric
+    - Binary treatment (0/1) → cohort_auto
+
+    This is the same logic used in workflow(), ensuring consistency.
+
+    Args:
+        idname: Unit identifier column name
+        tname: Time variable column name
+        gname: Group/cohort/treatment variable column name
+        analyzer: DiDAnalyzer instance (if None, uses get_analyzer())
+
+    Returns:
+        Dict with actual column names to use:
+        - idname: Actual unit column (may be converted)
+        - gname: Actual cohort column (may be converted)
+
+    Example:
+        >>> # Before: country (string), dem (binary)
+        >>> cols = _preprocess_did_columns("country", "year", "dem")
+        >>> # After: {"idname": "unit_id_numeric", "gname": "cohort_auto"}
+    """
+    if analyzer is None:
+        analyzer = get_analyzer()
+
+    data = analyzer.data
+
+    # Detect if gname is binary treatment (needs cohort creation) or already a cohort
+    is_binary_treatment = False
+    if gname in data.columns:
+        unique_vals = data[gname].dropna().unique()
+        # If only 0/1 or True/False, it's binary treatment
+        if len(unique_vals) <= 2 and set(unique_vals).issubset({0, 1, True, False}):
+            is_binary_treatment = True
+
+    try:
+        if is_binary_treatment:
+            # gname is binary treatment, need to create cohort
+            processed = analyzer.prepare_data_for_estimation(
+                unit_col=idname,
+                time_col=tname,
+                treatment_col=gname,  # Use gname as treatment
+                cohort_col=None  # Will auto-create cohort_auto
+            )
+            actual_idname = processed['unit_col']
+            actual_gname = processed['cohort_col']
+        else:
+            # gname is already a cohort, just handle unit_col conversion if needed
+            if idname in data.columns and data[idname].dtype == 'object':
+                # Need to convert string unit IDs
+                if 'unit_id_numeric' not in data.columns:
+                    unit_id_map = {name: idx for idx, name in enumerate(data[idname].unique())}
+                    analyzer.data['unit_id_numeric'] = analyzer.data[idname].map(unit_id_map)
+                    analyzer.config['unit_col'] = 'unit_id_numeric'
+                    analyzer.config['unit_col_original'] = idname
+                    logger.info(f"Auto-created numeric unit ID 'unit_id_numeric' from string '{idname}'")
+                actual_idname = 'unit_id_numeric'
+            else:
+                actual_idname = idname
+            actual_gname = gname
+
+    except Exception as e:
+        logger.warning(f"Auto-preprocessing failed: {e}. Using original column names.")
+        actual_idname = idname
+        actual_gname = gname
+
+    return {
+        'idname': actual_idname,
+        'gname': actual_gname
+    }
+
+
 # =============================================================================
 # TOOLS - Using FastMCP decorators
 # =============================================================================
@@ -290,7 +371,8 @@ async def workflow(
         treatment_col: Column name for treatment indicator
         cohort_col: Column name for treatment cohort (optional)
         method: Estimation method ("auto", "callaway_santanna", "sun_abraham",
-                "imputation_bjs", "gardner", "dcdh", "efficient")
+                "imputation_bjs", "gardner", "dcdh")
+                Note: "efficient" is DISABLED due to systematic issues.
         cluster_level: Variable for clustering standard errors
 
     Returns:
@@ -298,12 +380,14 @@ async def workflow(
 
     Note:
         **Results Storage:** Workflow results are stored with "workflow_" prefix.
-        - Primary method results: "workflow_{method}" (e.g., "workflow_efficient")
+        - Primary method results: "workflow_{method}" (e.g., "workflow_imputation_bjs")
         - Robustness check results: "workflow_{robustness_method}"
         - Latest results: "latest" (always points to most recent)
 
         **Export Results:** Use export_results(results_key="latest") or
-        export_results(results_key="workflow_efficient") to access workflow results.
+        export_results(results_key="workflow_imputation_bjs") to access workflow results.
+
+        **⚠️ Note:** "efficient" estimator is DISABLED. See KNOWN_ISSUES.md for details.
     """
     try:
         # Update analyzer config
@@ -744,17 +828,64 @@ async def estimate_callaway_santanna(
     try:
         if get_analyzer().data is None:
             return "❌ No data loaded. Please load data first."
-        
+
         if not get_analyzer().r_estimators:
             return "❌ R integration not available. Please install rpy2 and required R packages."
-        
+
+        # Auto-preprocess data (same logic as workflow)
+        # This allows direct method calls to work with string IDs and binary treatment
+        analyzer = get_analyzer()
+        data = analyzer.data
+
+        # Detect if gname is binary treatment (needs cohort creation) or already a cohort
+        is_binary_treatment = False
+        if gname in data.columns:
+            unique_vals = data[gname].dropna().unique()
+            # If only 0/1 or True/False, it's binary treatment
+            if len(unique_vals) <= 2 and set(unique_vals).issubset({0, 1, True, False}):
+                is_binary_treatment = True
+
+        try:
+            if is_binary_treatment:
+                # gname is binary treatment, need to create cohort
+                processed = analyzer.prepare_data_for_estimation(
+                    unit_col=idname,
+                    time_col=tname,
+                    treatment_col=gname,  # Use gname as treatment
+                    cohort_col=None  # Will auto-create cohort_auto
+                )
+            else:
+                # gname is already a cohort, just handle unit_col conversion if needed
+                # Still call preprocessing for unit_col conversion
+                if idname in data.columns and data[idname].dtype == 'object':
+                    # Need to convert string unit IDs
+                    if 'unit_id_numeric' not in data.columns:
+                        unit_id_map = {name: idx for idx, name in enumerate(data[idname].unique())}
+                        analyzer.data['unit_id_numeric'] = analyzer.data[idname].map(unit_id_map)
+                        analyzer.config['unit_col'] = 'unit_id_numeric'
+                        analyzer.config['unit_col_original'] = idname
+                        logger.info(f"Auto-created numeric unit ID 'unit_id_numeric' from string '{idname}'")
+                    actual_idname = 'unit_id_numeric'
+                else:
+                    actual_idname = idname
+                actual_gname = gname
+
+            if is_binary_treatment:
+                actual_idname = processed['unit_col']
+                actual_gname = processed['cohort_col']
+
+        except Exception as e:
+            logger.warning(f"Auto-preprocessing failed: {e}. Using original column names.")
+            actual_idname = idname
+            actual_gname = gname
+
         # Run Callaway & Sant'Anna estimation
         result = get_analyzer().r_estimators.callaway_santanna_estimator(
             data=get_analyzer().data,
             yname=yname,
             tname=tname,
-            idname=idname,
-            gname=gname,
+            idname=actual_idname,
+            gname=actual_gname,
             control_group=control_group,
             xformla=xformla
         )
@@ -946,13 +1077,18 @@ async def estimate_bjs_imputation(
         if not get_analyzer().r_estimators:
             return "❌ R integration not available. Please install rpy2 and required R packages."
 
+        # Auto-preprocess data (same logic as workflow)
+        processed = _preprocess_did_columns(unit_col, time_col, cohort_col)
+        actual_unit_col = processed['idname']
+        actual_cohort_col = processed['gname']
+
         # Run BJS Imputation estimation
         result = get_analyzer().r_estimators.bjs_imputation_estimator(
             data=get_analyzer().data,
             outcome_col=outcome_col,
-            unit_col=unit_col,
+            unit_col=actual_unit_col,
             time_col=time_col,
-            cohort_col=cohort_col,
+            cohort_col=actual_cohort_col,
             horizon=horizon,
             pretrends_test=pretrends_test
         )
@@ -1032,7 +1168,7 @@ async def estimate_dcdh(
     cohort_col: Optional[str] = None,
     mode: str = "dyn",
     effects: int = 5,
-    placebo: int = 0,
+    placebo: int = 5,
     controls: Optional[List[str]] = None
 ) -> str:
     """
@@ -1049,7 +1185,7 @@ async def estimate_dcdh(
         cohort_col: Treatment cohort variable (optional, auto-detected if None)
         mode: Estimation mode ("dyn" for dynamic, "avg" for average)
         effects: Number of dynamic effects to estimate (default: 5)
-        placebo: Number of placebo periods to test (default: 0)
+        placebo: Number of placebo periods to test (default: 5)
         controls: List of control variables (optional)
         
     Returns:
@@ -1071,12 +1207,18 @@ async def estimate_dcdh(
         
         if not get_analyzer().r_estimators:
             return "❌ R integration not available. Please install rpy2 and required R packages."
-        
+
+        # Auto-preprocess data (same logic as workflow)
+        # Use cohort_col if provided, otherwise use treatment_col
+        gname_input = cohort_col if cohort_col else treatment_col
+        processed = _preprocess_did_columns(unit_col, time_col, gname_input)
+        actual_unit_col = processed['idname']
+
         # Run DCDH estimation
         result = get_analyzer().r_estimators.dcdh_estimator(
             data=get_analyzer().data,
             outcome_col=outcome_col,
-            unit_col=unit_col,
+            unit_col=actual_unit_col,
             time_col=time_col,
             treatment_col=treatment_col,
             cohort_col=cohort_col,
@@ -1218,19 +1360,69 @@ async def estimate_efficient(
         >>> estimate_efficient("y", "id", "t", "g", use_cs=True, use_sa=True)
     """
     try:
+        # ⚠️ DEPRECATION WARNING ⚠️
+        return """# ⚠️ Efficient Estimator is Currently DISABLED ⚠️
+
+## Critical Issues Identified
+
+The Roth & Sant'Anna (2023) Efficient Estimator has been **temporarily disabled** due to systematic problems across multiple datasets:
+
+### Problem Summary:
+1. **PENN.csv**: ATT = -1.44 (185× larger than other methods, opposite direction)
+2. **california_prop99.csv**: Complete failure (R error: "argument is of length zero")
+3. **CPS.csv**: ATT = +0.061 (4-40× larger, false significance)
+
+### Why This is Serious:
+- Results are **dramatically different** from all other robust DID methods
+- Sometimes **complete failure** to run
+- Sometimes **false significance** when all other methods show no effect
+- **Direction reversal** (negative vs positive) compared to other methods
+
+### Recommended Alternatives:
+Use these **proven robust methods** instead:
+
+1. **Callaway & Sant'Anna (2021)** - Most robust, widely trusted
+   ```python
+   estimate_callaway_santanna(yname, tname, idname, gname)
+   ```
+
+2. **BJS Imputation (2024)** - Fast and efficient
+   ```python
+   estimate_bjs_imputation(outcome_col, unit_col, time_col, cohort_col)
+   ```
+
+3. **Gardner Two-Stage (2022)** - Computationally simple
+   ```python
+   estimate_gardner_two_stage(outcome_col, unit_col, time_col, cohort_col)
+   ```
+
+### Status:
+🔴 **DISABLED** until root cause is identified and resolved.
+
+For details, see: `/KNOWN_ISSUES.md` Issue #1
+
+**If you need efficient estimation, use Callaway & Sant'Anna or BJS Imputation - both are statistically efficient and reliable.**
+"""
+
+        # Code below is disabled
         if get_analyzer().data is None:
             return "❌ No data loaded. Please load data first."
-        
+
         if not get_analyzer().r_estimators:
             return "❌ R integration not available. Please install rpy2 and required R packages."
-        
+
+        # Auto-preprocess data (same logic as workflow)
+        processed = _preprocess_did_columns(unit_col, time_col, cohort_col)
+        actual_unit_col = processed['idname']
+        actual_cohort_col = processed['gname']
+
         # Run Efficient estimation
         result = get_analyzer().r_estimators.efficient_estimator(
             data=get_analyzer().data,
             outcome_col=outcome_col,
-            unit_col=unit_col,
+            unit_col=actual_unit_col,
             time_col=time_col,
-            cohort_col=cohort_col,
+            cohort_col=actual_cohort_col,
             estimand=estimand,
             event_time=event_time,
             use_cs=use_cs,
@@ -1386,13 +1578,18 @@ async def estimate_gardner_two_stage(
         if not get_analyzer().r_estimators:
             return "❌ R integration not available. Please install rpy2 and required R packages."
 
+        # Auto-preprocess data (same logic as workflow)
+        processed = _preprocess_did_columns(unit_col, time_col, cohort_col)
+        actual_unit_col = processed['idname']
+        actual_cohort_col = processed['gname']
+
         # Run Gardner Two-Stage estimation (EVENT STUDY mode always)
         result = get_analyzer().r_estimators.gardner_two_stage_estimator(
             data=get_analyzer().data,
             outcome_col=outcome_col,
-            unit_col=unit_col,
+            unit_col=actual_unit_col,
             time_col=time_col,
-            cohort_col=cohort_col,
+            cohort_col=actual_cohort_col,
             covariates=covariates
         )
         
@@ -1521,11 +1718,15 @@ async def estimate_gsynth(
         if not get_analyzer().r_estimators:
             return "❌ R integration not available. Please install rpy2 and required R packages."
 
+        # Auto-preprocess data (same logic as workflow)
+        processed = _preprocess_did_columns(unit_col, time_col, treatment_col)
+        actual_unit_col = processed['idname']
+
         # Run gsynth estimation
         result = get_analyzer().r_estimators.gsynth_estimator(
             data=get_analyzer().data,
             outcome_col=outcome_col,
-            unit_col=unit_col,
+            unit_col=actual_unit_col,
             time_col=time_col,
             treatment_col=treatment_col,
             covariates=covariates,
@@ -1636,11 +1837,16 @@ async def estimate_synthdid(
         if not get_analyzer().r_estimators:
             return "❌ R integration not available. Please install rpy2 and required R packages."
 
+        # Auto-preprocess data (same logic as workflow)
+        gname_input = cohort_col if cohort_col else treatment_col
+        processed = _preprocess_did_columns(unit_col, time_col, gname_input)
+        actual_unit_col = processed['idname']
+
         # Run synthdid estimation
         result = get_analyzer().r_estimators.synthdid_estimator(
             data=get_analyzer().data,
             outcome_col=outcome_col,
-            unit_col=unit_col,
+            unit_col=actual_unit_col,
             time_col=time_col,
             treatment_col=treatment_col,
             cohort_col=cohort_col,
@@ -1742,7 +1948,7 @@ async def create_event_study_plot(
             - "sun_abraham" - Sun & Abraham (2021)
             - "bjs_imputation" - Borusyak, Jaravel & Spiess (2024)
             - "dcdh" - de Chaisemartin & D'Haultfoeuille (2020)
-            - "efficient" - Roth & Sant'Anna (2023) Efficient
+            - "efficient" - ⚠️ DISABLED (see KNOWN_ISSUES.md)
             - "gardner_two_stage" - Gardner (2022) Two-Stage
         backend: Visualization backend ("matplotlib" or "plotly")
         display_inline: Whether to display image inline in Claude Desktop (default: True)
@@ -2197,7 +2403,7 @@ async def export_results(
               - "sun_abraham" - Sun & Abraham (2021)
               - "bjs_imputation" - Borusyak, Jaravel & Spiess (2024)
               - "dcdh" - de Chaisemartin & D'Haultfoeuille (2020)
-              - "efficient" - Roth & Sant'Anna (2023) Efficient
+              - "efficient" - ⚠️ DISABLED (see KNOWN_ISSUES.md)
               - "gardner_two_stage" - Gardner (2022) Two-Stage
 
             - Methods called via workflow(): Use "workflow_" prefix
@@ -2392,7 +2598,7 @@ async def export_comparison(
               - "sun_abraham" - Sun & Abraham (2021)
               - "bjs_imputation" - Borusyak, Jaravel & Spiess (2024)
               - "dcdh" - de Chaisemartin & D'Haultfoeuille (2020)
-              - "efficient" - Roth & Sant'Anna (2023) Efficient
+              - "efficient" - ⚠️ DISABLED (see KNOWN_ISSUES.md)
               - "gardner_two_stage" - Gardner (2022) Two-Stage
 
             - Methods called via workflow(): Use "workflow_" prefix
