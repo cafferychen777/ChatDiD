@@ -127,10 +127,10 @@ async def _run_callaway_santanna_for_sensitivity(analyzer) -> Dict[str, Any]:
         # Run att_gt with optimal settings for sensitivity analysis
         logger.info("Running Callaway & Sant'Anna for sensitivity analysis")
         cs_att = did_pkg.att_gt(
-            yname=config["outcome_var"],
-            tname=config["time_var"],
-            idname=config["unit_var"],
-            gname=config["cohort_var"],
+            yname=config["outcome_col"],
+            tname=config["time_col"],
+            idname=config["unit_col"],
+            gname=config.get("cohort_col", config["treatment_col"]),
             data=r_data,
             control_group="notyettreated",
             est_method="dr",  # Doubly robust for sensitivity
