@@ -970,14 +970,15 @@ class REstimators:
             )
 
             # STEP 2: Run EVENT STUDY mode for visualization
-            logger.info("Running did_imputation in EVENT STUDY mode for visualization")
+            logger.info("Running did_imputation in EVENT STUDY mode with pre-trends")
             result_event = did_imputation(
                 data=r_data,
                 yname=outcome_col,
                 idname=unit_col,
                 tname=time_col,
                 gname=gname_var,
-                horizon=True  # Enable full event study analysis
+                horizon=True,  # Enable full event study analysis
+                pretrends=True  # Include pre-treatment estimates for HonestDiD compatibility
             )
 
             logger.info("BJS estimation completed, extracting results...")
@@ -1936,7 +1937,7 @@ class REstimators:
         cohort_col: Optional[str] = None,
         mode: str = "dyn",
         effects: int = 5,
-        placebo: int = 0,
+        placebo: int = 5,
         controls: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
@@ -2662,25 +2663,41 @@ class REstimators:
                 "inference": inference
             }
 
-            # Extract ATT
-            att_avg = gsynth_result.rx2('att.avg')
-            # att.avg is a scalar, not a vector
-            att_estimate = float(att_avg[0]) if hasattr(att_avg, '__getitem__') else float(att_avg)
+            # Extract ATT from est.avg matrix
+            # est.avg is a 1x5 matrix: [Estimate, S.E., CI.lower, CI.upper, p.value]
+            est_avg_matrix = gsynth_result.rx2('est.avg')
 
-            # Standard error from att.avg.se
+            # Extract estimate (first column)
+            att_estimate = float(est_avg_matrix[0])
+
+            # Extract standard error and confidence intervals
             att_se = None
+            ci_lower = None
+            ci_upper = None
+            p_value = None
+
             if se:
                 try:
-                    att_avg_se = gsynth_result.rx2('att.avg.se')
-                    att_se = float(att_avg_se[0]) if hasattr(att_avg_se, '__getitem__') else float(att_avg_se)
-                except:
-                    logger.warning("Could not extract standard error from gsynth result")
+                    # est.avg is a matrix, extract columns by index
+                    # Column 0: Estimate, Column 1: S.E., Column 2: CI.lower, Column 3: CI.upper, Column 4: p.value
+                    att_se = float(est_avg_matrix[1]) if len(est_avg_matrix) > 1 else None
+                    ci_lower = float(est_avg_matrix[2]) if len(est_avg_matrix) > 2 else None
+                    ci_upper = float(est_avg_matrix[3]) if len(est_avg_matrix) > 3 else None
+                    p_value = float(est_avg_matrix[4]) if len(est_avg_matrix) > 4 else None
+                except Exception as e:
+                    logger.warning(f"Could not extract inference statistics from est.avg: {e}")
+                    # Fallback to manual calculation if extraction fails
+                    if att_se is None:
+                        att_se = None
+                        ci_lower = None
+                        ci_upper = None
 
             result["overall_att"] = {
                 "estimate": att_estimate,
                 "se": att_se,
-                "ci_lower": att_estimate - 1.96 * att_se if att_se else None,
-                "ci_upper": att_estimate + 1.96 * att_se if att_se else None,
+                "ci_lower": ci_lower,
+                "ci_upper": ci_upper,
+                "p_value": p_value,
             }
 
             # Extract period-by-period ATT
