@@ -55,6 +55,125 @@ class StorageManager:
         # Create directories
         self._initialize_directories()
     
+    def _get_user_directories(self, home: Path) -> List[tuple]:
+        """
+        Get user-specific directories in a cross-platform way.
+
+        Handles localized folder names on Windows/Linux and provides fallbacks.
+
+        Args:
+            home: User home directory path
+
+        Returns:
+            List of (dir_type, Path) tuples in priority order
+        """
+        import sys
+        import platform
+
+        directories = []
+        system = platform.system()
+
+        # Try platformdirs if available (best option)
+        try:
+            import platformdirs
+            user_docs = platformdirs.user_documents_dir()
+            user_downloads = platformdirs.user_downloads_dir()
+            directories.extend([
+                ("user_documents_platformdirs", Path(user_docs)),
+                ("user_downloads_platformdirs", Path(user_downloads)),
+            ])
+            logger.debug("Using platformdirs for user directories")
+        except ImportError:
+            logger.debug("platformdirs not available, using fallback methods")
+
+        # Windows-specific handling
+        if system == "Windows":
+            try:
+                # Try Windows API for proper localized paths
+                import ctypes.wintypes
+                from ctypes import windll, c_wchar_p
+
+                CSIDL_PERSONAL = 5  # My Documents
+                CSIDL_PROFILE = 40  # Downloads (Vista+)
+
+                buf = ctypes.create_unicode_buffer(ctypes.wintypes.MAX_PATH)
+
+                # Get Documents folder
+                windll.shell32.SHGetFolderPathW(None, CSIDL_PERSONAL, None, 0, buf)
+                if buf.value:
+                    directories.append(("user_documents_windows", Path(buf.value)))
+
+                # Get user profile (for Downloads)
+                windll.shell32.SHGetFolderPathW(None, CSIDL_PROFILE, None, 0, buf)
+                if buf.value:
+                    downloads = Path(buf.value) / "Downloads"
+                    if downloads.exists():
+                        directories.append(("user_downloads_windows", downloads))
+
+                logger.debug("Using Windows API for user directories")
+            except Exception as e:
+                logger.debug(f"Windows API method failed: {e}")
+
+        # Linux-specific handling (XDG user directories)
+        elif system == "Linux":
+            try:
+                import subprocess
+                # Try xdg-user-dir command for proper localized paths
+                result = subprocess.run(
+                    ["xdg-user-dir", "DOCUMENTS"],
+                    capture_output=True, text=True, timeout=2
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    documents = Path(result.stdout.strip())
+                    if documents.exists():
+                        directories.append(("user_documents_xdg", documents))
+
+                result = subprocess.run(
+                    ["xdg-user-dir", "DOWNLOAD"],
+                    capture_output=True, text=True, timeout=2
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    downloads = Path(result.stdout.strip())
+                    if downloads.exists():
+                        directories.append(("user_downloads_xdg", downloads))
+
+                logger.debug("Using xdg-user-dir for user directories")
+            except Exception as e:
+                logger.debug(f"xdg-user-dir method failed: {e}")
+
+        # Fallback: Try common English folder names
+        common_docs = [
+            "Documents",
+            "My Documents",
+            "文档",  # Chinese
+            "ドキュメント",  # Japanese
+            "Dokumente",  # German
+            "Documentos",  # Spanish/Portuguese
+        ]
+        common_downloads = [
+            "Downloads",
+            "下载",  # Chinese
+            "ダウンロード",  # Japanese
+            "Descargas",  # Spanish
+        ]
+
+        for folder_name in common_docs:
+            folder_path = home / folder_name
+            if folder_path.exists() and folder_path.is_dir():
+                directories.append(("user_documents_fallback", folder_path))
+                break
+
+        for folder_name in common_downloads:
+            folder_path = home / folder_name
+            if folder_path.exists() and folder_path.is_dir():
+                directories.append(("user_downloads_fallback", folder_path))
+                break
+
+        # Always include plain home directory as final fallback
+        directories.append(("user_home", home))
+
+        return directories
+
     def _determine_safe_base_path(self, base_dir: Optional[str] = None) -> str:
         """
         Determine a safe, writable base path with multiple fallback strategies.
@@ -81,34 +200,55 @@ class StorageManager:
             else:
                 logger.warning(f"Unsafe CHATDID_OUTPUT_DIR={env_dir}, ignoring")
         
-        # 3. Default relative paths (multiple fallbacks)
+        # 3. User HOME directory paths (BEST for Claude Desktop compatibility)
+        user_home = Path.home()
+
+        # Try to get proper user directories (cross-platform with fallbacks)
+        user_dirs = self._get_user_directories(user_home)
+
+        # Add user directory candidates
+        for dir_type, dir_path in user_dirs:
+            if dir_path:
+                candidates.append((dir_type, dir_path / "ChatDiD_outputs"))
+
+        # 4. Default relative paths (multiple fallbacks)
         candidates.extend([
             ("default", "./outputs"),
             ("fallback1", "outputs"),
             ("fallback2", "./chatdid_outputs"),
             ("fallback3", os.path.join(os.getcwd(), "outputs"))
         ])
-        
+
         # Try each candidate until we find a workable one
         for source, path_str in candidates:
             try:
                 path_obj = Path(path_str)
-                
+
                 # Test if we can create and write to this location
                 if self._test_path_viability(path_obj):
                     logger.info(f"Using {source} base directory: {path_obj}")
                     return str(path_obj)
                 else:
                     logger.debug(f"Path not viable ({source}): {path_obj}")
-                    
+
             except Exception as e:
                 logger.debug(f"Error with path candidate {source} ({path_str}): {e}")
-        
-        # If all else fails, use a temporary directory fallback
-        import tempfile
-        temp_base = Path(tempfile.gettempdir()) / "chatdid_outputs"
-        logger.warning(f"All path candidates failed, using temporary directory: {temp_base}")
-        return str(temp_base)
+
+        # If all else fails, use user home directory as last resort (better than /tmp for Claude Desktop)
+        home_fallback = user_home / "ChatDiD_temp_outputs"
+        logger.warning(f"All path candidates failed, using home fallback: {home_fallback}")
+
+        # Try to ensure this final fallback is at least writable
+        try:
+            home_fallback.mkdir(parents=True, exist_ok=True)
+            test_file = home_fallback / '.chatdid_write_test'
+            test_file.write_text('test', encoding='utf-8')
+            test_file.unlink()
+            logger.info(f"Final fallback directory verified: {home_fallback}")
+        except Exception as e:
+            logger.error(f"Even home fallback failed: {e}. Output functionality may not work.")
+
+        return str(home_fallback)
     
     def _is_safe_path(self, path_str: str) -> bool:
         """
@@ -211,9 +351,8 @@ class StorageManager:
                     # Try ./outputs as fallback
                     fallback = Path("./outputs")
                 elif attempt == 1:
-                    # Try user temp directory
-                    import tempfile
-                    fallback = Path(tempfile.gettempdir()) / "chatdid_outputs" 
+                    # Try user home directory (better than /tmp for Claude Desktop)
+                    fallback = Path.home() / "ChatDiD_outputs"
                 else:
                     # Final fallback - current directory
                     fallback = Path(".") / "chatdid_temp_outputs"
