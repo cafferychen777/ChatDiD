@@ -226,7 +226,11 @@ You can skip diagnostic steps and proceed to parallel trends assessment.
 
         # Define robustness check method pairing (following best practices)
         # Note: "efficient" estimator is DISABLED due to systematic issues (see KNOWN_ISSUES.md)
-        # Note: synthdid requires simultaneous treatment; gsynth supports staggered adoption
+        #
+        # Pairing strategy based on Roth et al. (2023) and recent DID literature:
+        # - Within DID family: CS ↔ SA, BJS ↔ Gardner, DCDH ↔ CS
+        # - Synthetic control vs DID: gsynth ↔ CS (cross-method validation)
+        # - Within synthetic control: synthdid ↔ gsynth
         robustness_pairs = {
             "callaway_santanna": "sun_abraham",
             "sun_abraham": "callaway_santanna",
@@ -234,8 +238,8 @@ You can skip diagnostic steps and proceed to parallel trends assessment.
             "efficient": "imputation_bjs",  # Kept for backward compatibility, but efficient is disabled
             "gardner": "sun_abraham",
             "dcdh": "callaway_santanna",
-            "gsynth": "gardner",  # Both support staggered adoption
-            "synthdid": "gsynth"  # Both are synthetic control methods (use with caution for staggered data)
+            "gsynth": "callaway_santanna",  # Synthetic control vs mainstream DID (cross-method validation)
+            "synthdid": "gsynth"  # Both are synthetic control methods
         }
 
         # Step 3a: Apply primary estimator
