@@ -331,11 +331,19 @@ This interactive workflow demonstrates how ChatDiD guides you through:
 
 ## Supported Methods
 
-- **Callaway & Sant'Anna (2021)**: Group-time average treatment effects
-- **Sun & Abraham (2021)**: Interaction-weighted estimator
-- **Borusyak, Jaravel & Spiess (2021)**: Imputation estimator
-- **Gardner (2022)**: Two-stage estimator
-- **de Chaisemartin & D'Haultfoeuille**: For complex treatments
+### Core DID Estimators
+
+- **Callaway & Sant'Anna (2021)**: Group-time average treatment effects with doubly robust estimation
+- **Sun & Abraham (2021)**: Interaction-weighted estimator using fixest
+- **Borusyak, Jaravel & Spiess (2024)**: Imputation-based estimator
+- **Gardner (2022)**: Two-stage difference-in-differences
+- **de Chaisemartin & D'Haultfoeuille (2020)**: Multiple treatment periods with heterogeneous effects
+- **Roth & Sant'Anna (2023)**: Efficient GMM estimator
+
+### Synthetic Control Methods
+
+- **gsynth (Xu 2017)**: Generalized synthetic control with interactive fixed effects
+- **synthdid (Arkhangelsky et al. 2019)**: Synthetic DiD combining SC and DiD
 
 ## Resources
 

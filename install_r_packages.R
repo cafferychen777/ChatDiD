@@ -45,6 +45,25 @@ cat("\n== Robustness & Sensitivity ==\n")
 check_and_install("HonestDiD", "Rambachan & Roth (2023) Sensitivity Analysis")
 check_and_install("pretrends", "Roth (2022) Power Analysis")
 
+cat("\n== Synthetic Control Methods ==\n")
+check_and_install("gsynth", "Xu (2017) Generalized Synthetic Control")
+
+# synthdid requires devtools for GitHub installation
+if (!requireNamespace("devtools", quietly = TRUE)) {
+  cat("Installing devtools (required for synthdid)...\n")
+  install.packages("devtools", repos = "https://cloud.r-project.org/")
+}
+
+cat("Installing synthdid (Arkhangelsky et al. 2019)...\n")
+tryCatch({
+  devtools::install_github("synth-inference/synthdid", quiet = TRUE)
+  cat("✓ synthdid installed successfully\n\n")
+}, error = function(e) {
+  cat(sprintf("✗ Failed to install synthdid: %s\n", e$message))
+  cat("Note: synthdid is optional. Install manually with:\n")
+  cat("  devtools::install_github('synth-inference/synthdid')\n\n")
+})
+
 cat("\n========================================\n")
 cat("Installation Summary\n")
 cat("========================================\n")
@@ -54,7 +73,8 @@ critical_packages <- c(
   "did", "fixest", "didimputation", "did2s",
   "DIDmultiplegt", "DIDmultiplegtDYN", "staggered",
   "bacondecomp", "TwoWayFEWeights",
-  "HonestDiD", "pretrends"
+  "HonestDiD", "pretrends",
+  "gsynth", "synthdid"
 )
 
 installed <- sapply(critical_packages, function(pkg) {
@@ -96,6 +116,10 @@ Diagnostics:
 Robustness:
   • HonestDiD        - Rambachan & Roth (2023) sensitivity analysis
   • pretrends        - Roth (2022) pre-trends power analysis
+
+Synthetic Control:
+  • gsynth           - Xu (2017) generalized synthetic control
+  • synthdid         - Arkhangelsky et al. (2019) synthetic DiD
 \n")
 
 cat("For more information, see:\n")

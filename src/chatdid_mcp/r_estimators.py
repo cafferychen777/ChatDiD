@@ -51,7 +51,9 @@ class REstimators:
             'pretrends': 'Power analysis',
             'DIDmultiplegt': 'de Chaisemartin & D\'Haultfoeuille estimator (legacy)',
             'DIDmultiplegtDYN': 'de Chaisemartin & D\'Haultfoeuille dynamic estimator (modern)',
-            'staggered': 'Roth & Sant\'Anna efficient estimator'
+            'staggered': 'Roth & Sant\'Anna efficient estimator',
+            'gsynth': 'Generalized synthetic control (Xu 2017)',
+            'synthdid': 'Synthetic difference-in-differences (Arkhangelsky et al. 2019)'
         }
         
         for pkg_name, description in required_packages.items():
@@ -2541,4 +2543,397 @@ class REstimators:
             return {
                 "status": "error",
                 "message": str(e)
+            }
+
+    def gsynth_estimator(
+        self,
+        data: pd.DataFrame,
+        outcome_col: str,
+        unit_col: str,
+        time_col: str,
+        treatment_col: str,
+        covariates: Optional[List[str]] = None,
+        force: str = "two-way",
+        CV: bool = True,
+        r_range: tuple = (0, 5),
+        se: bool = True,
+        inference: str = "parametric",
+        nboots: int = 200,
+        min_T0: Optional[int] = None,
+        parallel: bool = True,
+        cores: int = 4
+    ) -> Dict[str, Any]:
+        """
+        Generalized Synthetic Control Method (Xu 2017).
+
+        Uses interactive fixed effects model to estimate treatment effects
+        when parallel trends may be violated due to unobserved time-varying
+        confounders.
+
+        Reference:
+            Xu, Y. (2017). "Generalized Synthetic Control Method: Causal Inference
+            with Interactive Fixed Effects Models." Political Analysis, 25(1), 57-76.
+
+        Args:
+            data: Panel data
+            outcome_col: Outcome variable name
+            unit_col: Unit identifier name
+            time_col: Time variable name
+            treatment_col: Binary treatment indicator (0/1)
+            covariates: List of time-varying covariate names
+            force: Fixed effects - "none", "unit", "time", or "two-way"
+            CV: Use cross-validation to select number of factors
+            r_range: Tuple (min, max) for number of factors to consider
+            se: Compute standard errors
+            inference: "parametric" or "nonparametric" (bootstrap)
+            nboots: Number of bootstrap replications if inference="nonparametric"
+            min_T0: Minimum number of pre-treatment periods required
+            parallel: Use parallel processing
+            cores: Number of cores for parallel processing
+
+        Returns:
+            Dict with:
+            - status: "success" or "error"
+            - method: "Generalized Synthetic Control (Xu 2017)"
+            - overall_att: Average treatment effect on treated
+            - att_by_period: Treatment effects by post-treatment period
+            - n_factors: Number of factors selected
+            - pre_treatment_fit: Pre-treatment MSPE
+            - diagnostics: Model fit information
+
+        Notes:
+            - Handles staggered adoption automatically
+            - Suitable for small N, large T panels
+            - Requires at least min_T0 pre-treatment periods (default: 5)
+            - Cross-validation recommended for factor selection
+        """
+        if not R_AVAILABLE or 'gsynth' not in self.r_packages:
+            return {
+                "status": "error",
+                "message": "gsynth R package not available. Install with: install.packages('gsynth')"
+            }
+
+        try:
+            logger.info(f"Running Generalized Synthetic Control (gsynth)")
+
+            # Convert to R dataframe
+            with localconverter(robjects.default_converter + pandas2ri.converter):
+                r_data = robjects.conversion.py2rpy(data)
+
+            # Build formula
+            if covariates:
+                covariate_str = " + " + " + ".join(covariates)
+            else:
+                covariate_str = ""
+            formula_str = f"{outcome_col} ~ {treatment_col}{covariate_str}"
+            logger.info(f"Formula: {formula_str}")
+
+            # Get gsynth function
+            gsynth_fn = self.r_packages['gsynth'].gsynth
+
+            # Build arguments
+            gsynth_args = {
+                "formula": robjects.Formula(formula_str),
+                "data": r_data,
+                "index": robjects.StrVector([unit_col, time_col]),
+                "force": force,
+                "CV": CV,
+                "r": robjects.IntVector(list(range(r_range[0], r_range[1] + 1))),
+                "se": se,
+                "inference": inference,
+                "nboots": nboots,
+                "parallel": parallel,
+                "cores": cores
+            }
+
+            if min_T0 is not None:
+                gsynth_args["min_T0"] = min_T0
+
+            # Run gsynth
+            logger.info(f"Running gsynth with CV={CV}, force={force}")
+            gsynth_result = gsynth_fn(**gsynth_args)
+
+            # Extract results
+            result = {
+                "status": "success",
+                "method": "Generalized Synthetic Control (Xu 2017)",
+                "formula": formula_str,
+                "force": force,
+                "inference": inference
+            }
+
+            # Extract ATT
+            att_avg = gsynth_result.rx2('att.avg')
+            # att.avg is a scalar, not a vector
+            att_estimate = float(att_avg[0]) if hasattr(att_avg, '__getitem__') else float(att_avg)
+
+            # Standard error from att.avg.se
+            att_se = None
+            if se:
+                try:
+                    att_avg_se = gsynth_result.rx2('att.avg.se')
+                    att_se = float(att_avg_se[0]) if hasattr(att_avg_se, '__getitem__') else float(att_avg_se)
+                except:
+                    logger.warning("Could not extract standard error from gsynth result")
+
+            result["overall_att"] = {
+                "estimate": att_estimate,
+                "se": att_se,
+                "ci_lower": att_estimate - 1.96 * att_se if att_se else None,
+                "ci_upper": att_estimate + 1.96 * att_se if att_se else None,
+            }
+
+            # Extract period-by-period ATT
+            att_by_period = {}
+            att_est = gsynth_result.rx2('att')
+            if att_est is not None:
+                periods = list(att_est.names)
+                for i, period in enumerate(periods):
+                    att_by_period[period] = {
+                        "estimate": float(list(att_est)[i])
+                    }
+            result["att_by_period"] = att_by_period
+
+            # Extract model information with safe access
+            try:
+                if CV:
+                    r_cv = gsynth_result.rx2('r.cv')
+                    result["n_factors"] = int(r_cv[0]) if r_cv is not robjects.NULL else r_range[1]
+                else:
+                    result["n_factors"] = r_range[1]
+            except:
+                result["n_factors"] = r_range[1]
+
+            try:
+                n_t = gsynth_result.rx2('N.t')
+                result["n_treated"] = int(n_t[0]) if n_t is not robjects.NULL else None
+            except:
+                result["n_treated"] = None
+
+            try:
+                n_co = gsynth_result.rx2('N.co')
+                result["n_control"] = int(n_co[0]) if n_co is not robjects.NULL else None
+            except:
+                result["n_control"] = None
+
+            try:
+                t_val = gsynth_result.rx2('T')
+                result["n_periods"] = int(t_val[0]) if t_val is not robjects.NULL else None
+            except:
+                result["n_periods"] = None
+
+            # Pre-treatment fit
+            try:
+                mspe = gsynth_result.rx2('pre.sd')
+                if mspe is not None and mspe is not robjects.NULL:
+                    result["pre_treatment_mspe"] = float(mspe[0])
+            except:
+                pass
+
+            logger.info(f"gsynth complete: ATT = {result['overall_att']['estimate']:.4f}, factors = {result['n_factors']}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error in gsynth estimator: {e}", exc_info=True)
+            return {
+                "status": "error",
+                "message": f"gsynth estimation failed: {str(e)}"
+            }
+
+    def synthdid_estimator(
+        self,
+        data: pd.DataFrame,
+        outcome_col: str,
+        unit_col: str,
+        time_col: str,
+        treatment_col: str,
+        cohort_col: Optional[str] = None,
+        vcov_method: str = "placebo",
+        weights: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Synthetic Difference-in-Differences estimator (Arkhangelsky et al. 2019).
+
+        Combines synthetic control method with difference-in-differences by
+        estimating both unit and time weights to construct a synthetic control.
+
+        Reference:
+            Arkhangelsky, D., Athey, S., Hirshberg, D. A., Imbens, G. W., & Wager, S.
+            (2019). "Synthetic Difference in Differences." NBER Working Paper 25532.
+
+        Args:
+            data: Panel data
+            outcome_col: Outcome variable name
+            unit_col: Unit identifier name
+            time_col: Time variable name
+            treatment_col: Binary treatment indicator (0/1)
+            cohort_col: Optional cohort variable (for staggered adoption)
+            vcov_method: Variance estimation method - "placebo", "bootstrap", or "jackknife"
+            weights: Optional dictionary with "lambda" and "omega" for custom weights
+
+        Returns:
+            Dict with:
+            - status: "success" or "error"
+            - method: "Synthetic Difference-in-Differences (Arkhangelsky et al. 2019)"
+            - overall_att: Treatment effect estimate
+            - unit_weights: Weights assigned to control units
+            - time_weights: Weights assigned to pre-treatment periods
+            - comparison_methods: Results from traditional DID and SC for comparison
+
+        Important Notes:
+            - **Requires all treated units to begin treatment simultaneously**
+            - If staggered adoption, must convert to cohort-specific analysis
+            - Package currently in beta, interface may change
+        """
+        if not R_AVAILABLE or 'synthdid' not in self.r_packages:
+            return {
+                "status": "error",
+                "message": "synthdid R package not available. Install with: devtools::install_github('synth-inference/synthdid')"
+            }
+
+        try:
+            logger.info(f"Running Synthetic Difference-in-Differences (synthdid)")
+
+            # Check for simultaneous treatment timing
+            if cohort_col:
+                cohorts = data[cohort_col].unique()
+                if len(cohorts) > 2:  # More than never-treated (0) and one treatment cohort
+                    logger.warning(f"synthdid works best with simultaneous treatment. Found {len(cohorts)-1} treatment cohorts.")
+
+            # Convert to R dataframe
+            with localconverter(robjects.default_converter + pandas2ri.converter):
+                r_data = robjects.conversion.py2rpy(data)
+
+            # Get synthdid functions
+            panel_matrices = self.r_packages['synthdid'].panel_matrices
+            synthdid_estimate = self.r_packages['synthdid'].synthdid_estimate
+
+            # Prepare panel matrices
+            # synthdid's panel_matrices expects: panel, unit, time, outcome, treatment
+            # where unit/time/outcome/treatment are column names or indices
+            setup = panel_matrices(
+                panel=r_data,
+                unit=unit_col,
+                time=time_col,
+                outcome=outcome_col,
+                treatment=treatment_col
+            )
+
+            # Extract Y, N0, T0 from setup
+            Y = setup.rx2('Y')
+            N0 = setup.rx2('N0')
+            T0 = setup.rx2('T0')
+
+            # Estimate SDID
+            logger.info("Computing Synthetic DiD estimate")
+            tau_sdid = synthdid_estimate(Y, N0, T0)
+
+            # Compute standard error using vcov() (official API)
+            # Note: bootstrap and jackknife methods return NA when N_treated = 1
+            logger.info(f"Computing standard error with method: {vcov_method}")
+            vcov_result = robjects.r['vcov'](tau_sdid, method=vcov_method)
+            se_sdid = float(robjects.r['sqrt'](vcov_result)[0])
+
+            # Check if SE is NA (happens when N_treated = 1 for bootstrap/jackknife)
+            if np.isnan(se_sdid):
+                # Count treated units from R objects
+                Y_matrix = setup.rx2('Y')
+                n_control = int(setup.rx2('N0')[0])
+                n_total = int(robjects.r['nrow'](Y_matrix)[0])
+                n_treated = n_total - n_control
+
+                if n_treated == 1 and vcov_method in ['bootstrap', 'jackknife']:
+                    error_msg = (
+                        f"Variance method '{vcov_method}' is mathematically undefined when there is only 1 treated unit.\n\n"
+                        f"Why this happens:\n"
+                        f"  - Bootstrap requires resampling multiple treated units (N_treated ≥ 2)\n"
+                        f"  - Jackknife requires leaving out units, but becomes undefined when removing the only treated unit\n\n"
+                        f"Solution:\n"
+                        f"  Use vcov_method='placebo' instead, which works correctly for single treated units.\n\n"
+                        f"Your data:\n"
+                        f"  - Treated units: {n_treated}\n"
+                        f"  - Control units: {n_control}\n"
+                        f"  - Total units: {n_total}\n\n"
+                        f"Reference: Arkhangelsky et al. (2021) 'Synthetic Difference in Differences', Section 5"
+                    )
+                    logger.error(error_msg)
+                    return {
+                        "status": "error",
+                        "message": error_msg
+                    }
+                else:
+                    # Other reason for NA
+                    logger.warning(f"Standard error is NA for method '{vcov_method}', using None")
+
+            # Also compute traditional DiD and SC for comparison
+            logger.info("Computing traditional DiD and Synthetic Control for comparison")
+            did_estimate = self.r_packages['synthdid'].did_estimate
+            sc_estimate = self.r_packages['synthdid'].sc_estimate
+
+            tau_did = did_estimate(Y, N0, T0)
+            tau_sc = sc_estimate(Y, N0, T0)
+
+            # Extract results
+            result = {
+                "status": "success",
+                "method": "Synthetic Difference-in-Differences (Arkhangelsky et al. 2019)",
+                "vcov_method": vcov_method
+            }
+
+            # Main estimate
+            result["overall_att"] = {
+                "estimate": float(tau_sdid[0]),
+                "se": float(se_sdid),
+                "ci_lower": float(tau_sdid[0] - 1.96 * se_sdid),
+                "ci_upper": float(tau_sdid[0] + 1.96 * se_sdid),
+            }
+
+            # Comparison with traditional methods
+            result["comparison_methods"] = {
+                "traditional_did": {
+                    "estimate": float(tau_did[0]),
+                    "note": "Traditional difference-in-differences (equal weights)"
+                },
+                "synthetic_control": {
+                    "estimate": float(tau_sc[0]),
+                    "note": "Traditional synthetic control (no time weights)"
+                },
+                "synthdid": {
+                    "estimate": float(tau_sdid[0]),
+                    "note": "Synthetic DiD (unit + time weights)"
+                }
+            }
+
+            # Extract weights
+            try:
+                weights_obj = robjects.r['attr'](tau_sdid, 'weights')
+                if weights_obj is not None:
+                    omega = weights_obj.rx2('omega')  # Unit weights
+                    lambda_w = weights_obj.rx2('lambda')  # Time weights
+
+                    result["unit_weights"] = {
+                        "n_nonzero": int(robjects.r['sum'](omega > 0)[0]),
+                        "max_weight": float(robjects.r['max'](omega)[0])
+                    }
+                    result["time_weights"] = {
+                        "n_nonzero": int(robjects.r['sum'](lambda_w > 0)[0]),
+                        "max_weight": float(robjects.r['max'](lambda_w)[0])
+                    }
+            except Exception as e:
+                logger.warning(f"Could not extract weights: {e}")
+
+            # Sample size information
+            result["n_treated_units"] = int(Y.nrow) - int(N0[0])
+            result["n_control_units"] = int(N0[0])
+            result["n_pretreatment_periods"] = int(T0[0])
+            result["n_posttreatment_periods"] = int(Y.ncol) - int(T0[0])
+
+            logger.info(f"synthdid complete: ATT = {result['overall_att']['estimate']:.4f}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error in synthdid estimator: {e}", exc_info=True)
+            return {
+                "status": "error",
+                "message": f"synthdid estimation failed: {str(e)}"
             }

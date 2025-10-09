@@ -1469,9 +1469,254 @@ async def estimate_gardner_two_stage(
         response += f"- **Implementation:** Built on standard regression methods\n"
         
         return response
-        
+
     except Exception as e:
         logger.error(f"Error in Gardner Two-Stage estimation: {e}")
+        return f"❌ **Error:** {str(e)}"
+
+
+@mcp.tool()
+async def estimate_gsynth(
+    outcome_col: str,
+    unit_col: str,
+    time_col: str,
+    treatment_col: str,
+    covariates: Optional[List[str]] = None,
+    force: str = "two-way",
+    CV: bool = True,
+    r_range: tuple = (0, 5),
+    se: bool = True,
+    inference: str = "parametric"
+) -> str:
+    """
+    Generalized Synthetic Control Method (Xu 2017).
+
+    Uses interactive fixed effects model to estimate treatment effects when
+    parallel trends may be violated due to unobserved time-varying confounders.
+    Suitable for staggered adoption designs.
+
+    Args:
+        outcome_col: Outcome variable name
+        unit_col: Unit identifier name
+        time_col: Time variable name
+        treatment_col: Binary treatment indicator (0/1)
+        covariates: List of time-varying covariate names (optional)
+        force: Fixed effects - "none", "unit", "time", or "two-way" (default: "two-way")
+        CV: Use cross-validation to select number of factors (default: True)
+        r_range: Tuple (min, max) for number of factors to consider (default: (0, 5))
+        se: Compute standard errors (default: True)
+        inference: "parametric" or "nonparametric" (bootstrap) (default: "parametric")
+
+    Returns:
+        Formatted estimation results with ATT and diagnostics
+
+    Reference:
+        Xu, Y. (2017). "Generalized Synthetic Control Method: Causal Inference
+        with Interactive Fixed Effects Models." Political Analysis, 25(1), 57-76.
+    """
+    try:
+        if get_analyzer().data is None:
+            return "❌ No data loaded. Please load data first."
+
+        if not get_analyzer().r_estimators:
+            return "❌ R integration not available. Please install rpy2 and required R packages."
+
+        # Run gsynth estimation
+        result = get_analyzer().r_estimators.gsynth_estimator(
+            data=get_analyzer().data,
+            outcome_col=outcome_col,
+            unit_col=unit_col,
+            time_col=time_col,
+            treatment_col=treatment_col,
+            covariates=covariates,
+            force=force,
+            CV=CV,
+            r_range=r_range,
+            se=se,
+            inference=inference
+        )
+
+        if result["status"] != "success":
+            return f"❌ Error: {result.get('message', 'Unknown error')}"
+
+        # Store results
+        get_analyzer().results["gsynth"] = result
+        get_analyzer().results["latest"] = result
+        logger.info("Stored gsynth results")
+
+        # Format results
+        response = "# Generalized Synthetic Control (Xu 2017) Results 📊\n\n"
+        response += f"**Method:** Interactive Fixed Effects Model\n"
+        response += f"**Fixed Effects:** {result['force']}\n"
+        response += f"**Inference:** {result['inference']}\n"
+
+        if covariates:
+            response += f"**Covariates:** {len(covariates)} variables\n"
+        response += "\n"
+
+        # Overall ATT
+        overall = result['overall_att']
+        response += "## Overall Average Treatment Effect\n\n"
+        response += f"- **Estimate:** {overall['estimate']:.4f}\n"
+        if overall['se'] is not None:
+            response += f"- **Std. Error:** {overall['se']:.4f}\n"
+            response += f"- **95% CI:** [{overall['ci_lower']:.4f}, {overall['ci_upper']:.4f}]\n"
+        response += "\n"
+
+        # Model information
+        response += "## Model Information\n\n"
+        response += f"- **Number of Factors:** {result['n_factors']}\n"
+        response += f"- **Treated Units:** {result['n_treated']}\n"
+        response += f"- **Control Units:** {result['n_control']}\n"
+        response += f"- **Time Periods:** {result['n_periods']}\n"
+        if "pre_treatment_mspe" in result:
+            response += f"- **Pre-treatment MSPE:** {result['pre_treatment_mspe']:.4f}\n"
+        response += "\n"
+
+        # Method insights
+        response += "## Method Insights\n\n"
+        response += "- **Advantage:** Relaxes parallel trends assumption via interactive fixed effects\n"
+        response += "- **Innovation:** Estimates latent factors capturing time-varying confounders\n"
+        response += "- **Robustness:** Handles staggered adoption automatically\n"
+        response += "- **Flexibility:** Cross-validation selects optimal number of factors\n"
+        response += "- **Best Use:** When parallel trends violated due to unobserved time-varying confounders\n"
+
+        # Statistical significance
+        if overall['se'] is not None:
+            z_stat = abs(overall['estimate'] / overall['se'])
+            if z_stat > 1.96:
+                response += "\n✅ **Statistically significant treatment effect detected**\n"
+            else:
+                response += "\n⚠️ **No statistically significant treatment effect at 5% level**\n"
+
+        return response
+
+    except Exception as e:
+        logger.error(f"Error in gsynth estimation: {e}")
+        return f"❌ **Error:** {str(e)}"
+
+
+@mcp.tool()
+async def estimate_synthdid(
+    outcome_col: str,
+    unit_col: str,
+    time_col: str,
+    treatment_col: str,
+    cohort_col: Optional[str] = None,
+    vcov_method: str = "placebo"
+) -> str:
+    """
+    Synthetic Difference-in-Differences estimator (Arkhangelsky et al. 2019).
+
+    Combines synthetic control method with difference-in-differences by
+    estimating both unit and time weights to construct a synthetic control.
+
+    IMPORTANT: Requires all treated units to begin treatment simultaneously.
+    For staggered adoption, use gsynth or other DID estimators instead.
+
+    Args:
+        outcome_col: Outcome variable name
+        unit_col: Unit identifier name
+        time_col: Time variable name
+        treatment_col: Binary treatment indicator (0/1)
+        cohort_col: Optional cohort variable (for checking staggered adoption)
+        vcov_method: Variance estimation - "placebo", "bootstrap", or "jackknife"
+
+    Returns:
+        Formatted estimation results with ATT, comparison methods, and weights
+
+    Reference:
+        Arkhangelsky, D., Athey, S., Hirshberg, D. A., Imbens, G. W., & Wager, S.
+        (2019). "Synthetic Difference in Differences." NBER Working Paper 25532.
+    """
+    try:
+        if get_analyzer().data is None:
+            return "❌ No data loaded. Please load data first."
+
+        if not get_analyzer().r_estimators:
+            return "❌ R integration not available. Please install rpy2 and required R packages."
+
+        # Run synthdid estimation
+        result = get_analyzer().r_estimators.synthdid_estimator(
+            data=get_analyzer().data,
+            outcome_col=outcome_col,
+            unit_col=unit_col,
+            time_col=time_col,
+            treatment_col=treatment_col,
+            cohort_col=cohort_col,
+            vcov_method=vcov_method
+        )
+
+        if result["status"] != "success":
+            return f"❌ Error: {result.get('message', 'Unknown error')}"
+
+        # Store results
+        get_analyzer().results["synthdid"] = result
+        get_analyzer().results["latest"] = result
+        logger.info("Stored synthdid results")
+
+        # Format results
+        response = "# Synthetic Difference-in-Differences (Arkhangelsky et al. 2019) Results 📊\n\n"
+        response += f"**Method:** Synthetic DiD\n"
+        response += f"**Variance Estimation:** {result['vcov_method']}\n\n"
+
+        # Overall ATT
+        overall = result['overall_att']
+        response += "## Overall Average Treatment Effect\n\n"
+        response += f"- **Estimate:** {overall['estimate']:.4f}\n"
+        response += f"- **Std. Error:** {overall['se']:.4f}\n"
+        response += f"- **95% CI:** [{overall['ci_lower']:.4f}, {overall['ci_upper']:.4f}]\n\n"
+
+        # Comparison with other methods
+        if "comparison_methods" in result:
+            comp = result["comparison_methods"]
+            response += "## Method Comparison\n\n"
+            response += "| Method | Estimate | Description |\n"
+            response += "|--------|----------|-------------|\n"
+            response += f"| Traditional DiD | {comp['traditional_did']['estimate']:.4f} | {comp['traditional_did']['note']} |\n"
+            response += f"| Synthetic Control | {comp['synthetic_control']['estimate']:.4f} | {comp['synthetic_control']['note']} |\n"
+            response += f"| **Synthetic DiD** | **{comp['synthdid']['estimate']:.4f}** | {comp['synthdid']['note']} |\n\n"
+
+        # Sample information
+        response += "## Sample Information\n\n"
+        response += f"- **Treated Units:** {result['n_treated_units']}\n"
+        response += f"- **Control Units:** {result['n_control_units']}\n"
+        response += f"- **Pre-treatment Periods:** {result['n_pretreatment_periods']}\n"
+        response += f"- **Post-treatment Periods:** {result['n_posttreatment_periods']}\n"
+
+        # Weights information
+        if "unit_weights" in result:
+            response += f"\n### Unit Weights\n"
+            response += f"- **Non-zero weights:** {result['unit_weights']['n_nonzero']} control units\n"
+            response += f"- **Maximum weight:** {result['unit_weights']['max_weight']:.4f}\n"
+
+        if "time_weights" in result:
+            response += f"\n### Time Weights\n"
+            response += f"- **Non-zero weights:** {result['time_weights']['n_nonzero']} pre-treatment periods\n"
+            response += f"- **Maximum weight:** {result['time_weights']['max_weight']:.4f}\n"
+
+        response += "\n"
+
+        # Method insights
+        response += "## Method Insights\n\n"
+        response += "- **Advantage:** Robust to both parallel trends and interpolation bias\n"
+        response += "- **Innovation:** Combines synthetic control unit weighting with DiD time weighting\n"
+        response += "- **Robustness:** Estimates both unit weights (which controls) and time weights (which periods)\n"
+        response += "- **Comparison:** Automatically compares with traditional DiD and SC methods\n"
+        response += "- **Best Use:** Simultaneous treatment timing with potential violations of parallel trends\n"
+        response += "- **Limitation:** Requires all treated units to start treatment at same time\n"
+
+        # Statistical significance
+        z_stat = abs(overall['estimate'] / overall['se'])
+        if z_stat > 1.96:
+            response += "\n✅ **Statistically significant treatment effect detected**\n"
+        else:
+            response += "\n⚠️ **No statistically significant treatment effect at 5% level**\n"
+
+        return response
+
+    except Exception as e:
+        logger.error(f"Error in synthdid estimation: {e}")
         return f"❌ **Error:** {str(e)}"
 
 

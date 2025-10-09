@@ -88,7 +88,9 @@ class DiDAnalyzer:
                 "bacondecomp",      # Goodman-Bacon decomposition
                 "TwoWayFEWeights",  # TWFE weights analysis
                 "HonestDiD",        # Sensitivity analysis
-                "pretrends"         # Power analysis
+                "pretrends",        # Power analysis
+                "gsynth",           # Generalized synthetic control
+                "synthdid"          # Synthetic difference-in-differences
             ]
 
             for package in r_packages:
@@ -350,6 +352,25 @@ class DiDAnalyzer:
                 unit_col=self.config['unit_col'],
                 time_col=self.config['time_col'],
                 cohort_col=self.config.get('cohort_col', self.config['treatment_col']),
+                **kwargs
+            )
+        elif method == "gsynth":
+            return self.r_estimators.gsynth_estimator(
+                data=self.data,
+                outcome_col=self.config['outcome_col'],
+                unit_col=self.config['unit_col'],
+                time_col=self.config['time_col'],
+                treatment_col=self.config['treatment_col'],
+                **kwargs
+            )
+        elif method == "synthdid":
+            return self.r_estimators.synthdid_estimator(
+                data=self.data,
+                outcome_col=self.config['outcome_col'],
+                unit_col=self.config['unit_col'],
+                time_col=self.config['time_col'],
+                treatment_col=self.config['treatment_col'],
+                cohort_col=self.config.get('cohort_col'),
                 **kwargs
             )
         else:

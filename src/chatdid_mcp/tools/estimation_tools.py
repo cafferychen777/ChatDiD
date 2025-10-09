@@ -21,11 +21,13 @@ estimate_did_tool = Tool(
                 "description": "DID estimation method",
                 "enum": [
                     "callaway_santanna",
-                    "sun_abraham", 
+                    "sun_abraham",
                     "borusyak_jaravel_spiess",
                     "gardner_two_stage",
                     "de_chaisemartin_dhaultfoeuille",
-                    "twfe_baseline"
+                    "twfe_baseline",
+                    "gsynth",
+                    "synthdid"
                 ],
                 "default": "callaway_santanna"
             },
