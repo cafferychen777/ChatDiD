@@ -70,22 +70,39 @@ class DiDWorkflow:
             cohort_summary = data.groupby(cohort_col)[treatment_col].agg(['mean', 'min', 'max'])
             
         else:
-            # Infer from treatment variable
+            # Infer from treatment variable and auto-create cohort
             treatment_by_unit_time = data.groupby([unit_col, time_col])[treatment_col].first().reset_index()
-            
+
             # Find first treatment time for each unit
             first_treated = treatment_by_unit_time[treatment_by_unit_time[treatment_col] == 1].groupby(unit_col)[time_col].min()
-            
+
             # Check if all units are treated at the same time
             unique_treatment_times = first_treated.dropna().unique()
             n_cohorts = len(unique_treatment_times)
             is_staggered = n_cohorts > 1
-            
+
             cohort_summary = pd.DataFrame({
                 'cohort': unique_treatment_times,
                 'n_units': [sum(first_treated == t) for t in unique_treatment_times]
             })
-        
+
+            # Auto-create cohort variable (Callaway & Sant'Anna 2021 requirement)
+            cohort_col = 'cohort_auto'
+            self.analyzer.data[cohort_col] = self.analyzer.data[unit_col].map(first_treated).fillna(0).astype(int)
+            self.analyzer.config['cohort_col'] = cohort_col
+            logger.info(f"Auto-created cohort variable '{cohort_col}' from binary treatment")
+
+        # Auto-create numeric unit ID if needed (R packages require numeric idname)
+        if data[unit_col].dtype == 'object':
+            unit_id_map = {name: idx for idx, name in enumerate(data[unit_col].unique())}
+            numeric_unit_col = 'unit_id_numeric'
+            self.analyzer.data[numeric_unit_col] = self.analyzer.data[unit_col].map(unit_id_map)
+            original_unit_col = unit_col
+            unit_col = numeric_unit_col
+            self.analyzer.config['unit_col'] = unit_col
+            self.analyzer.config['unit_col_original'] = original_unit_col
+            logger.info(f"Auto-created numeric unit ID '{numeric_unit_col}' from string '{original_unit_col}'")
+
         # Store in workflow state
         self.workflow_state["step"] = 1
         self.workflow_state["staggered"] = is_staggered
@@ -179,7 +196,7 @@ You can skip diagnostic steps and proceed to parallel trends assessment.
         - "imputation_bjs": BJS imputation
         - "gardner": Gardner two-stage
         - "dcdh": de Chaisemartin & D'Haultfoeuille estimator
-        - "efficient": Roth & Sant'Anna efficient estimator
+        - "efficient": ⚠️ DISABLED (see KNOWN_ISSUES.md)
         """
         logger.info(f"Step 3: Applying robust estimator (method={method})")
 
@@ -201,16 +218,17 @@ You can skip diagnostic steps and proceed to parallel trends assessment.
                 elif forbidden_weight > 0.1:
                     method = "sun_abraham"  # Fast and convenient
                 else:
-                    method = "efficient"  # Roth & Sant'Anna efficient estimator
+                    method = "imputation_bjs"  # Fast and efficient (was "efficient", now disabled)
             else:
                 method = "callaway_santanna"  # Safe default
 
         # Define robustness check method pairing (following best practices)
+        # Note: "efficient" estimator is DISABLED due to systematic issues (see KNOWN_ISSUES.md)
         robustness_pairs = {
             "callaway_santanna": "sun_abraham",
             "sun_abraham": "callaway_santanna",
-            "imputation_bjs": "efficient",
-            "efficient": "imputation_bjs",
+            "imputation_bjs": "gardner",  # Changed from "efficient" (disabled)
+            "efficient": "imputation_bjs",  # Kept for backward compatibility, but efficient is disabled
             "gardner": "sun_abraham",
             "dcdh": "callaway_santanna"
         }
