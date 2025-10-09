@@ -371,7 +371,7 @@ async def workflow(
         treatment_col: Column name for treatment indicator
         cohort_col: Column name for treatment cohort (optional)
         method: Estimation method ("auto", "callaway_santanna", "sun_abraham",
-                "imputation_bjs", "gardner", "dcdh")
+                "imputation_bjs", "gardner", "dcdh", "gsynth", "synthdid")
                 Note: "efficient" is DISABLED due to systematic issues.
         cluster_level: Variable for clustering standard errors
 
@@ -1948,8 +1948,10 @@ async def create_event_study_plot(
             - "sun_abraham" - Sun & Abraham (2021)
             - "bjs_imputation" - Borusyak, Jaravel & Spiess (2024)
             - "dcdh" - de Chaisemartin & D'Haultfoeuille (2020)
-            - "efficient" - ⚠️ DISABLED (see KNOWN_ISSUES.md)
             - "gardner_two_stage" - Gardner (2022) Two-Stage
+            - "gsynth" - Generalized Synthetic Control (Xu 2017)
+            - "synthdid" - Synthetic DID (Arkhangelsky et al. 2019)
+            - "efficient" - ⚠️ DISABLED (see KNOWN_ISSUES.md)
         backend: Visualization backend ("matplotlib" or "plotly")
         display_inline: Whether to display image inline in Claude Desktop (default: True)
         save_path: Optional filename to save the plot
@@ -2403,8 +2405,10 @@ async def export_results(
               - "sun_abraham" - Sun & Abraham (2021)
               - "bjs_imputation" - Borusyak, Jaravel & Spiess (2024)
               - "dcdh" - de Chaisemartin & D'Haultfoeuille (2020)
-              - "efficient" - ⚠️ DISABLED (see KNOWN_ISSUES.md)
               - "gardner_two_stage" - Gardner (2022) Two-Stage
+              - "gsynth" - Generalized Synthetic Control (Xu 2017)
+              - "synthdid" - Synthetic DID (Arkhangelsky et al. 2019)
+              - "efficient" - ⚠️ DISABLED (see KNOWN_ISSUES.md)
 
             - Methods called via workflow(): Use "workflow_" prefix
               - "workflow_callaway_santanna"
@@ -2598,8 +2602,10 @@ async def export_comparison(
               - "sun_abraham" - Sun & Abraham (2021)
               - "bjs_imputation" - Borusyak, Jaravel & Spiess (2024)
               - "dcdh" - de Chaisemartin & D'Haultfoeuille (2020)
-              - "efficient" - ⚠️ DISABLED (see KNOWN_ISSUES.md)
               - "gardner_two_stage" - Gardner (2022) Two-Stage
+              - "gsynth" - Generalized Synthetic Control (Xu 2017)
+              - "synthdid" - Synthetic DID (Arkhangelsky et al. 2019)
+              - "efficient" - ⚠️ DISABLED (see KNOWN_ISSUES.md)
 
             - Methods called via workflow(): Use "workflow_" prefix
               - "workflow_callaway_santanna"

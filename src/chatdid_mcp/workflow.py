@@ -196,6 +196,8 @@ You can skip diagnostic steps and proceed to parallel trends assessment.
         - "imputation_bjs": BJS imputation
         - "gardner": Gardner two-stage
         - "dcdh": de Chaisemartin & D'Haultfoeuille estimator
+        - "gsynth": Generalized synthetic control (Xu 2017)
+        - "synthdid": Synthetic DID (Arkhangelsky et al. 2019)
         - "efficient": ⚠️ DISABLED (see KNOWN_ISSUES.md)
         """
         logger.info(f"Step 3: Applying robust estimator (method={method})")
@@ -224,13 +226,16 @@ You can skip diagnostic steps and proceed to parallel trends assessment.
 
         # Define robustness check method pairing (following best practices)
         # Note: "efficient" estimator is DISABLED due to systematic issues (see KNOWN_ISSUES.md)
+        # Note: synthdid requires simultaneous treatment; gsynth supports staggered adoption
         robustness_pairs = {
             "callaway_santanna": "sun_abraham",
             "sun_abraham": "callaway_santanna",
             "imputation_bjs": "gardner",  # Changed from "efficient" (disabled)
             "efficient": "imputation_bjs",  # Kept for backward compatibility, but efficient is disabled
             "gardner": "sun_abraham",
-            "dcdh": "callaway_santanna"
+            "dcdh": "callaway_santanna",
+            "gsynth": "gardner",  # Both support staggered adoption
+            "synthdid": "gsynth"  # Both are synthetic control methods (use with caution for staggered data)
         }
 
         # Step 3a: Apply primary estimator

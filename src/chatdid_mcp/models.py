@@ -30,17 +30,20 @@ class DiDWorkflowParams(BaseModel):
         "imputation_bjs",
         "gardner",
         "dcdh",
-        "efficient"
+        "efficient",
+        "gsynth",
+        "synthdid"
     ] = Field("auto", description="Estimation method")
     cluster_level: Optional[str] = Field(None, description="Clustering variable")
-    
+
     @field_validator('method')
     @classmethod
     def validate_method(cls, v):
         """Validate estimation method"""
         valid_methods = [
             "auto", "callaway_santanna", "sun_abraham",
-            "imputation_bjs", "gardner", "dcdh", "efficient"
+            "imputation_bjs", "gardner", "dcdh", "efficient",
+            "gsynth", "synthdid"
         ]
         if v not in valid_methods:
             raise ValueError(f"Method must be one of: {', '.join(valid_methods)}")
