@@ -7,6 +7,10 @@ difference-in-differences analysis operations.
 
 import pandas as pd
 import numpy as np
+
+# Configure matplotlib backend BEFORE importing pyplot to prevent Dock icon on macOS
+import matplotlib
+matplotlib.use('Agg')  # Non-interactive backend (no GUI, no Dock icon)
 import matplotlib.pyplot as plt
 import seaborn as sns
 import plotly.graph_objects as go
@@ -75,6 +79,14 @@ class DiDAnalyzer:
     def _setup_r_packages(self):
         """Setup R packages for DID analysis."""
         try:
+            # CRITICAL: Disable R graphics devices BEFORE loading any packages
+            # This prevents macOS from showing Python icon in Dock
+            try:
+                r('options(device = "pdf")')  # Use non-interactive device
+                logger.info("Configured R to use non-interactive graphics device")
+            except Exception as e:
+                logger.warning(f"Could not configure R graphics device: {e}")
+
             # Install and load required R packages
             # Core estimators
             r_packages = [
@@ -329,7 +341,8 @@ class DiDAnalyzer:
                 )
                 if bacon_result["status"] == "success":
                     diagnostics["bacon_decomp"] = bacon_result
-        
+                    self.diagnostics["bacon_decomp"] = bacon_result  # Store for visualization
+
         # Run TWFE weights analysis if requested and available
         if run_twfe_weights and self.r_estimators:
             weights_result = self.r_estimators.twfe_weights_analysis(
@@ -341,7 +354,8 @@ class DiDAnalyzer:
             )
             if weights_result["status"] == "success":
                 diagnostics["twfe_weights"] = weights_result
-        
+                self.diagnostics["twfe_weights"] = weights_result  # Store for visualization
+
         return {"status": "success", "diagnostics": diagnostics}
     
     async def estimate_did(

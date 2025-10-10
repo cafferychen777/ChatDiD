@@ -584,8 +584,16 @@ async def diagnose_goodman_bacon(
     """
     Run Goodman-Bacon (2021) decomposition using bacondecomp::bacon().
 
-    This tool analyzes TWFE bias by decomposing the overall estimate into
-    different comparison types. Results are automatically stored for visualization.
+    **What it checks:** FORBIDDEN COMPARISONS in staggered DID designs
+    - Detects when treated units at different times are compared to each other
+    - Shows weight distribution across comparison types
+    - Identifies "Earlier vs Later" and "Later vs Earlier" comparisons
+
+    **Important:** This is ONE of TWO diagnostic checks you should run:
+    1. This tool → Checks for forbidden comparisons (timing issues)
+    2. `analyze_twfe_weights()` → Checks for negative weights
+
+    Both can cause TWFE bias, but they are DIFFERENT problems!
 
     Args:
         formula: R formula (e.g., "outcome ~ treatment")
@@ -596,9 +604,9 @@ async def diagnose_goodman_bacon(
         Decomposition results showing weights and estimates for each 2×2 comparison
 
     Next Steps:
-        After running this tool, you can create visualizations with:
-        - `create_diagnostic_plots()` - Generate Goodman-Bacon decomposition plot
-        - `debug_analyzer_state()` - Verify results were stored
+        - Run `analyze_twfe_weights()` to complete diagnostic analysis
+        - Use `create_diagnostic_plots()` to visualize results
+        - If bias detected, use robust estimators (CS, SA, BJS, Gardner)
 
     Example:
         >>> diagnose_goodman_bacon(
@@ -635,18 +643,30 @@ async def diagnose_goodman_bacon(
         response = "# Goodman-Bacon Decomposition Results 📊\n\n"
         response += f"**Overall TWFE Estimate:** {result['overall_estimate']:.4f}\n\n"
         response += "## Comparison Breakdown\n\n"
-        
+
         for comp_type, details in result['comparison_types'].items():
             response += f"**{comp_type}:**\n"
             response += f"- Weight: {details['weight']:.1%}\n"
             response += f"- Estimate: {details['estimate']:.4f}\n\n"
-        
+
         # Warning if forbidden comparisons detected
+        response += "## Diagnosis\n\n"
+
         if result['forbidden_comparison_weight'] > 0.1:
-            response += "⚠️ **WARNING:** High weight on forbidden comparisons!\n"
-            response += f"- {result['forbidden_comparison_weight']:.1%} of weight from problematic comparisons\n"
-            response += "- TWFE estimates likely biased\n"
-            response += "- **Recommendation:** Use heterogeneity-robust estimators\n"
+            response += "⚠️ **WARNING:** Forbidden comparisons detected!\n\n"
+            response += f"- **{result['forbidden_comparison_weight']:.1%}** of weight from \"Earlier vs Later\" / \"Later vs Earlier\" comparisons\n"
+            response += "- These comparisons mix treatment effects from different periods\n"
+            response += "- TWFE estimates likely biased due to **treatment timing issues**\n\n"
+            response += "**What this means:**\n"
+            response += "- Units treated at different times are being compared\n"
+            response += "- This violates the assumption needed for valid TWFE estimation\n\n"
+            response += "**Recommendation:** Use heterogeneity-robust estimators designed for staggered adoption\n\n"
+            response += "⚠️ **Note:** This checks forbidden comparisons. Also run `analyze_twfe_weights()` to check for **negative weights**\n"
+        else:
+            response += "✅ **No forbidden comparisons detected**\n\n"
+            response += "- Comparisons are primarily between treated and never-treated units\n"
+            response += "- This specific bias source is minimal\n\n"
+            response += "⚠️ **Note:** This only checks forbidden comparisons. Also run `analyze_twfe_weights()` to check for **negative weights**\n"
         
         return response
         
@@ -665,9 +685,20 @@ async def analyze_twfe_weights(
     """
     Analyze negative weights in TWFE estimation.
 
-    Shows which observations receive negative weights and their
-    contribution to bias when treatment effects are heterogeneous.
-    Results are automatically stored for visualization.
+    **What it checks:** NEGATIVE WEIGHTS in TWFE regression
+    - Detects observations that receive negative weights
+    - Negative weights can flip the sign of treatment effects
+    - Shows how many observations are affected
+
+    **Important:** This is ONE of TWO diagnostic checks you should run:
+    1. `diagnose_goodman_bacon()` → Checks for forbidden comparisons (timing issues)
+    2. This tool → Checks for negative weights
+
+    Both can cause TWFE bias, but they are DIFFERENT problems!
+
+    **Key distinction:**
+    - Forbidden comparisons: Wrong units being compared (can have positive weights)
+    - Negative weights: Weights with wrong sign (< 0)
 
     Args:
         outcome_col: Column name for outcome variable
@@ -679,9 +710,9 @@ async def analyze_twfe_weights(
         Detailed weight analysis showing negative weight shares and affected groups
 
     Next Steps:
-        After running this tool, you can create visualizations with:
-        - `create_diagnostic_plots()` - Generate TWFE weights distribution plot
-        - `debug_analyzer_state()` - Verify results were stored
+        - Run `diagnose_goodman_bacon()` to complete diagnostic analysis
+        - Use `create_diagnostic_plots()` to visualize results
+        - If bias detected, use robust estimators (CS, SA, BJS, Gardner)
 
     Examples:
         >>> # Basic weight analysis
@@ -691,8 +722,8 @@ async def analyze_twfe_weights(
         >>> analyze_twfe_weights("outcome", "unit", "time", "treatment")
 
     Note:
-        This complements Goodman-Bacon decomposition by showing exactly
-        which observations contribute to bias through negative weighting.
+        Even if negative weights = 0%, forbidden comparisons may still exist!
+        Always run BOTH diagnostic tools for complete TWFE bias assessment.
     """
     try:
         analyzer = get_analyzer()
@@ -767,23 +798,30 @@ async def analyze_twfe_weights(
         
         # Interpretation and recommendations
         response += "## Interpretation\n\n"
-        
+
         neg_share = result.get('negative_weight_share', 0)
         if neg_share < 0.01:
-            response += "✅ **Minimal negative weighting detected**\n\n"
-            response += "- TWFE estimates are likely reliable\n"
-            response += "- Treatment effect heterogeneity has minimal impact\n"
+            response += "✅ **No negative weights detected**\n\n"
+            response += "- No observations receive negative weights in TWFE regression\n"
+            response += "- This specific source of bias is not present\n\n"
+            response += "⚠️ **Note:** This only checks for negative weights. Other bias sources may exist:\n"
+            response += "- Run `diagnose_goodman_bacon()` to check for **forbidden comparisons**\n"
+            response += "- Forbidden comparisons can cause bias even without negative weights\n"
         elif neg_share < 0.05:
             response += "⚠️ **Some negative weighting detected**\n\n"
-            response += "- TWFE estimates may have slight bias\n"
-            response += "- Consider robust estimators for comparison\n"
+            response += f"- {neg_share:.1%} of weights are negative\n"
+            response += "- These negative weights can cause bias when treatment effects vary\n"
+            response += "- Consider robust estimators for comparison\n\n"
+            response += "**Also check:** Run `diagnose_goodman_bacon()` for forbidden comparisons analysis\n"
         else:
             response += "❌ **Substantial negative weighting detected**\n\n"
-            response += "- TWFE estimates likely biased\n"
+            response += f"- {neg_share:.1%} of weights are negative\n"
+            response += "- TWFE estimates likely biased due to negative weighting\n"
             response += "- Strongly recommend using heterogeneity-robust estimators:\n"
             response += "  - Callaway & Sant'Anna (`estimate_callaway_santanna`)\n"
             response += "  - Sun & Abraham (`estimate_sun_abraham`)\n"
-            response += "  - Imputation methods (`estimate_bjs_imputation`)\n"
+            response += "  - Imputation methods (`estimate_bjs_imputation`)\n\n"
+            response += "**Also check:** Run `diagnose_goodman_bacon()` for additional bias sources\n"
         
         # Store diagnostic results for visualization
         analyzer.diagnostics["twfe_weights"] = result

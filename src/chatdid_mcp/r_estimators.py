@@ -40,6 +40,13 @@ class REstimators:
     
     def _load_r_packages(self):
         """Load required R packages."""
+        # Disable R graphics devices to prevent GUI windows (macOS Dock icon)
+        try:
+            r('options(device = "pdf")')  # Use non-interactive device
+            logger.info("Configured R to use non-interactive graphics device (pdf)")
+        except Exception as e:
+            logger.warning(f"Could not configure R graphics device: {e}")
+
         required_packages = {
             'bacondecomp': 'Goodman-Bacon decomposition',
             'TwoWayFEWeights': 'TWFE weights analysis',
