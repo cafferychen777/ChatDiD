@@ -235,6 +235,28 @@ tail -50 ~/Library/Logs/Claude/mcp-server-ChatDiD.log
 
 See [docs/FASTMCP_TROUBLESHOOTING.md](docs/FASTMCP_TROUBLESHOOTING.md) for detailed troubleshooting guide.
 
+#### Error: "File not found" when loading data
+
+**Problem:** You're using relative paths or attaching files, which don't work with MCP servers.
+
+**Solution:** Always use absolute file paths:
+
+```bash
+# Get absolute path of your data file
+pwd  # Shows current directory
+# Then combine with relative path, or:
+realpath data/examples/mpdta.csv  # Shows full path
+```
+
+**In Claude Desktop:**
+```
+❌ Wrong: "Load data/examples/mpdta.csv"
+❌ Wrong: "Load ~/ChatDiD/data/examples/mpdta.csv"  # ~ doesn't expand
+❌ Wrong: Dragging/attaching file to chat
+
+✅ Correct: "Load /Users/yourname/projects/ChatDiD/data/examples/mpdta.csv"
+```
+
 ### Verifying Installation
 
 Once installed, open your MCP client and check that the ChatDiD tools are available:
@@ -245,20 +267,45 @@ Once installed, open your MCP client and check that the ChatDiD tools are availa
 
 Try loading example data:
 ```
-Load the mpdta dataset from data/examples/mpdta.csv
+Load the mpdta dataset from /absolute/path/to/ChatDiD/data/examples/mpdta.csv
 ```
+
+**Note:** Replace `/absolute/path/to/ChatDiD` with your actual project directory path. See the Usage Example section below for details on file paths.
 
 ## Usage Example
 
-Once connected to Claude Desktop (or other MCP clients), you can start a DID analysis through natural conversation:
+Once connected to Claude Desktop (or other MCP clients), you can start a DID analysis through natural conversation.
+
+### ⚠️ Important: File Paths
+
+**You MUST use absolute file paths when loading data:**
 
 ```
-User: "I want to analyze minimum wage policy effects using the mpdta dataset.
-       Can you help me run a difference-in-differences analysis?"
+✅ Correct:   load_data("/Users/username/projects/ChatDiD/data/examples/mpdta.csv")
+❌ Wrong:     load_data("data/examples/mpdta.csv")  # Relative paths don't work
+❌ Wrong:     Attaching files directly to chat      # File attachments are not supported
+```
+
+**Why?** MCP servers run in a different working directory than your current terminal. Always provide the full absolute path to your data files.
+
+**Quick way to get absolute path:**
+```bash
+# On macOS/Linux:
+realpath data/examples/mpdta.csv
+
+# Or just use pwd:
+echo "$(pwd)/data/examples/mpdta.csv"
+```
+
+### Example Conversation
+
+```
+User: "I want to analyze minimum wage policy effects.
+       The data is at /Users/myname/ChatDiD/data/examples/mpdta.csv"
 
 Claude: I'll help you conduct a robust DID analysis! Let me start by loading the data.
 
-[Uses load_data tool]
+[Uses load_data tool with absolute path]
 
 ✅ Data Loading Successful
 - 2,500 observations × 6 columns
