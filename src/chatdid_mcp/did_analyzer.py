@@ -180,22 +180,26 @@ class DiDAnalyzer:
         }
 
     async def load_data(
-        self, 
-        file_path: str, 
+        self,
+        file_path: str,
         file_type: str = "auto",
         **kwargs
     ) -> Dict[str, Any]:
         """Load data from various file formats."""
         try:
             file_path = Path(file_path)
-            
+
+            # Check if file exists before attempting to load
+            if not file_path.exists():
+                raise FileNotFoundError(f"File does not exist: {file_path}")
+
             if file_type == "auto":
                 file_type = file_path.suffix.lower()
-            
+
             # Normalize file type (remove leading dot if present)
             if file_type.startswith('.'):
                 file_type = file_type[1:]
-            
+
             # Load data based on file type
             if file_type in ["csv"]:
                 self.data = pd.read_csv(file_path, **kwargs)
@@ -211,7 +215,7 @@ class DiDAnalyzer:
                 self.data = pd.read_parquet(file_path, **kwargs)
             else:
                 raise ValueError(f"Unsupported file type: {file_type}")
-            
+
             # Clear previous analysis results when loading new data
             # This prevents mixing diagnostics/results from different datasets
             if self.diagnostics:
@@ -232,7 +236,11 @@ class DiDAnalyzer:
 
             logger.info(f"Loaded data with shape {self.data.shape}")
             return {"status": "success", "info": info}
-            
+
+        except FileNotFoundError as e:
+            # Re-raise FileNotFoundError to be caught by server.py with specific guidance
+            logger.error(f"File not found: {e}")
+            raise
         except Exception as e:
             logger.error(f"Error loading data: {e}")
             return {"status": "error", "message": str(e)}

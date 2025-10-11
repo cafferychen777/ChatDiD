@@ -21,10 +21,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 try:
     from .did_analyzer import DiDAnalyzer
     from .storage_manager import StorageManager
+    from .models import SensitivityAnalysisParams
 except ImportError:
     # Fallback for when running as script
     from chatdid_mcp.did_analyzer import DiDAnalyzer
     from chatdid_mcp.storage_manager import StorageManager
+    from chatdid_mcp.models import SensitivityAnalysisParams
 
 # Configure logging - CRITICAL: Use stderr only for STDIO transport
 logging.basicConfig(
@@ -195,9 +197,77 @@ The data is now loaded and ready for DID analysis!
         else:
             return f"❌ **Error loading data:** {result['message']}"
 
+    except FileNotFoundError as e:
+        logger.error(f"File not found in load_data: {e}")
+        return f"""
+❌ **Error: File not found**
+
+The specified file does not exist: `{file_path}`
+
+**Common Causes:**
+
+1. **Using relative paths** ❌
+   - MCP servers run in a different directory
+   - Relative paths like `data/file.csv` will not work
+
+2. **Using tilde (~) in paths** ❌
+   - Tilde expansion may not work in MCP context
+   - `~/ChatDiD/data.csv` will fail
+
+3. **Attaching files to chat** ❌
+   - File attachments are not supported by MCP servers
+   - Files must exist on your filesystem
+
+**Solution: Use absolute paths** ✅
+
+Get the absolute path of your file:
+
+```bash
+# Method 1: Use realpath
+realpath data/examples/mpdta.csv
+
+# Method 2: Use pwd + filename
+echo "$(pwd)/data/examples/mpdta.csv"
+```
+
+Then use the full path in your request:
+```
+Load /Users/yourname/projects/ChatDiD/data/examples/mpdta.csv
+```
+
+📖 See README.md "Usage Example" section for more details about file paths.
+"""
+
     except Exception as e:
         logger.error(f"Error in load_data: {e}")
-        return f"❌ **Error:** {str(e)}"
+        # Check if error message indicates file/path issues
+        error_msg = str(e).lower()
+        if any(keyword in error_msg for keyword in ['no such file', 'file not found', 'does not exist', 'cannot find']):
+            return f"""
+❌ **Error: Cannot access file**
+
+{str(e)}
+
+**This looks like a file path issue.**
+
+**Solution: Use absolute paths** ✅
+
+MCP servers require absolute file paths. Get the absolute path:
+
+```bash
+# Method 1: Use realpath
+realpath your_file.csv
+
+# Method 2: Use pwd
+echo "$(pwd)/your_file.csv"
+```
+
+Then use the full path like: `/Users/yourname/projects/ChatDiD/data/file.csv`
+
+📖 See README.md "Usage Example" section for details about file paths.
+"""
+        else:
+            return f"❌ **Error:** {str(e)}"
 
 
 @mcp.tool()
@@ -2803,27 +2873,62 @@ async def export_comparison(
 async def sensitivity_analysis(
     data_id: str = "current",
     method: str = "relative_magnitude",
-    m_values: Optional[List[float]] = None,
+    m_values: Optional[Union[List[float], str]] = None,
     event_time: int = 0,
     confidence_level: float = 0.95,
     estimator_method: str = "callaway_santanna"
 ) -> str:
     """
     Conduct HonestDiD sensitivity analysis for parallel trends assumption.
-    
+
     Based on Rambachan & Roth (2023) "A More Credible Approach to Parallel Trends"
-    
+
     Args:
         data_id: Dataset identifier (default: "current")
         method: "relative_magnitude" or "smoothness" constraints
         m_values: List of M values for sensitivity (default: [0.5, 1.0, 1.5, 2.0])
+                 Can be a JSON array or string representation: "[0.5, 1.0, 1.5, 2.0]"
         event_time: Target event time for analysis (default: 0)
         confidence_level: Confidence level for intervals (default: 0.95)
         estimator_method: Base DID estimator ("callaway_santanna" or "sun_abraham")
-    
+
     Returns:
         Formatted sensitivity analysis results with robustness assessment
     """
+    # Validate and parse parameters using Pydantic model
+    try:
+        params = SensitivityAnalysisParams(
+            data_id=data_id,
+            method=method,
+            m_values=m_values,
+            event_time=event_time,
+            confidence_level=confidence_level,
+            estimator_method=estimator_method
+        )
+        # Extract validated values
+        m_values = params.m_values
+        method = params.method
+        confidence_level = params.confidence_level
+    except Exception as e:
+        return f"""❌ **Parameter validation error:**
+
+{str(e)}
+
+**Note:** For `m_values` parameter, you can use:
+- JSON array: `[0.5, 1.0, 1.5, 2.0]`
+- String representation: `"[0.5, 1.0, 1.5, 2.0]"`
+- Or omit it to use default values: [0.5, 1.0, 1.5, 2.0]
+
+**Example:**
+```python
+sensitivity_analysis(
+    method="relative_magnitude",
+    m_values=[0.5, 1.0, 1.5, 2.0],  # Or "[0.5, 1.0, 1.5, 2.0]"
+    estimator_method="callaway_santanna"
+)
+```
+"""
+
     try:
         # Use the server's analyzer instance directly
         analyzer = get_analyzer()
