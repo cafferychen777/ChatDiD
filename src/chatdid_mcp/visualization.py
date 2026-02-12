@@ -6,9 +6,7 @@ Implements event study plots and diagnostic plots for DID analysis.
 from __future__ import annotations  # For forward type references
 
 import logging
-import os
-from typing import Dict, Any, Optional, List, Tuple, Union, TYPE_CHECKING
-import pandas as pd
+from typing import Dict, Any, Optional, List, Union, TYPE_CHECKING
 import numpy as np
 from datetime import datetime
 import base64
@@ -40,8 +38,6 @@ try:
     import matplotlib
     matplotlib.use('Agg')  # Use non-interactive backend
     import matplotlib.pyplot as plt
-    import matplotlib.patches as patches
-    from matplotlib.patches import Rectangle
     import seaborn as sns
     MATPLOTLIB_AVAILABLE = True
     logger.info("Matplotlib backend loaded successfully")
@@ -535,7 +531,7 @@ class DiDVisualizer:
 
         # Plot 2: Estimates vs Weights (bubble plot)
         sizes = [w * 1000 for w in weights]  # Scale for visibility
-        scatter = ax2.scatter(estimates, weights, s=sizes, c=colors, alpha=0.6)
+        ax2.scatter(estimates, weights, s=sizes, c=colors, alpha=0.6)
 
         # Add overall estimate line
         ax2.axvline(x=overall_estimate, color='red', linestyle='--',
@@ -1119,7 +1115,6 @@ class DiDVisualizer:
 
             # Load image
             img = PILImage.open(io.BytesIO(img_bytes))
-            original_format = img.format or 'PNG'
 
             # Strategy 1: Lower DPI progressively
             for dpi in [150, 100, 72]:

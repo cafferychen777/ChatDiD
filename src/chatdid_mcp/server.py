@@ -804,7 +804,7 @@ async def diagnose_goodman_bacon(
 
         # Extract treatment variable from formula to feed into preprocessing.
         import re
-        match = re.search(r'~\s*(\w+)', formula)
+        match = re.search(r'~\s*([\w.]+)', formula)
         if not match:
             return "Error: Could not parse treatment variable from formula. Expected 'outcome ~ treatment'."
         treatment_var = match.group(1)
@@ -2119,13 +2119,6 @@ async def create_event_study_plot(
     """
     try:
         # Import MCP types at runtime to avoid startup conflicts
-        try:
-            from mcp.types import ImageContent, TextContent
-        except ImportError:
-            # Fallback if mcp.types not available
-            ImageContent = None
-            TextContent = None
-
         # Determine display mode based on parameter
         display_mode = "both" if display_inline else "save"
 
@@ -2633,8 +2626,8 @@ Tip: Use results_key="latest" for the primary estimation results, or specify one
 
         # Include diagnostics if requested
         export_data = {"results": results}
-        if include_diagnostics and "diagnostics" in analyzer.results:
-            export_data["diagnostics"] = analyzer.results["diagnostics"]
+        if include_diagnostics and analyzer.diagnostics:
+            export_data["diagnostics"] = analyzer.diagnostics
 
         # Format content based on export format
         if format == "csv":
@@ -2663,8 +2656,6 @@ Tip: Use results_key="latest" for the primary estimation results, or specify one
             filename = f"{filename}.{extension}"
 
         # Save file using storage manager
-        from pathlib import Path
-
         storage = get_storage()
         file_path = storage.base_dir / "exports" / filename
 
@@ -2872,8 +2863,6 @@ Tip: Use methods=None to export all available methods.
             filename = f"{filename}.{extension}"
 
         # Save file
-        from pathlib import Path
-
         storage = get_storage()
         file_path = storage.base_dir / "exports" / filename
 

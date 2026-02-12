@@ -982,6 +982,38 @@ class DiDAnalyzer:
         
         return recommendations
 
+    def _resolve_results_key(self, results_key: str) -> Dict[str, Any]:
+        """Resolve a results_key to the corresponding estimation results.
+
+        Returns the results dict on success, or an error dict with
+        {"status": "error", "message": ...} if the key cannot be resolved.
+        """
+        if not self.results:
+            return {
+                "status": "error",
+                "message": "No estimation results available. Run estimation first."
+            }
+
+        if results_key == "latest":
+            results = self.results.get("latest")
+            if results is None:
+                return {
+                    "status": "error",
+                    "message": "No primary estimation results available. Please run a DID estimator first."
+                }
+            return results
+
+        if results_key in self.results:
+            return self.results[results_key]
+
+        available_keys = [k for k in self.results.keys()
+                          if k not in ["latest", "diagnostics", "workflow"]]
+        available_str = "', '".join(available_keys) if available_keys else "None"
+        return {
+            "status": "error",
+            "message": f"Results key '{results_key}' not found. Available keys: '{available_str}'. Use 'latest' for the primary estimation results."
+        }
+
     # Visualization Methods
     async def create_event_study_plot(
         self,
@@ -1009,31 +1041,9 @@ class DiDAnalyzer:
         Returns:
             Dict with plot information, or ImageContent for display
         """
-        if not self.results:
-            return {
-                "status": "error",
-                "message": "No estimation results available. Run estimation first."
-            }
-
-        # Get results — "latest" is the primary estimator, set by _store_estimation().
-        if results_key == "latest":
-            results = self.results.get("latest")
-            if results is None:
-                return {
-                    "status": "error",
-                    "message": "No primary estimation results available. Please run a DID estimator first."
-                }
-        elif results_key in self.results:
-            results = self.results[results_key]
-        else:
-            # List available results keys (excluding 'latest' and internal keys)
-            available_keys = [k for k in self.results.keys()
-                            if k not in ["latest", "diagnostics", "workflow"]]
-            available_str = "', '".join(available_keys) if available_keys else "None"
-            return {
-                "status": "error",
-                "message": f"Results key '{results_key}' not found. Available keys: '{available_str}'. Use 'latest' for the primary estimation results."
-            }
+        results = self._resolve_results_key(results_key)
+        if results.get("status") == "error":
+            return results
 
         # Set backend
         self.visualizer.set_backend(backend)
@@ -1118,31 +1128,9 @@ class DiDAnalyzer:
         Returns:
             Dict with comprehensive report information
         """
-        if not self.results:
-            return {
-                "status": "error",
-                "message": "No estimation results available"
-            }
-
-        # Get results — "latest" is the primary estimator, set by _store_estimation().
-        if results_key == "latest":
-            results = self.results.get("latest")
-            if results is None:
-                return {
-                    "status": "error",
-                    "message": "No primary estimation results available. Please run a DID estimator first."
-                }
-        elif results_key in self.results:
-            results = self.results[results_key]
-        else:
-            # List available results keys (excluding 'latest' and internal keys)
-            available_keys = [k for k in self.results.keys()
-                            if k not in ["latest", "diagnostics", "workflow"]]
-            available_str = "', '".join(available_keys) if available_keys else "None"
-            return {
-                "status": "error",
-                "message": f"Results key '{results_key}' not found. Available keys: '{available_str}'. Use 'latest' for the primary estimation results."
-            }
+        results = self._resolve_results_key(results_key)
+        if results.get("status") == "error":
+            return results
 
         # Set backend
         self.visualizer.set_backend(backend)

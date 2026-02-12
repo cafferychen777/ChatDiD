@@ -6,7 +6,6 @@ Following Roth et al. (2023) best practices
 import logging
 from typing import Dict, Any, Optional
 import pandas as pd
-import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -196,7 +195,7 @@ class DiDWorkflow:
             Dict with:
             - is_staggered: bool
             - treatment_timing: analysis of when units get treated
-            - recommendation: "proceed_to_step4" or "proceed_to_step2"
+            - recommendation: "proceed_to_step3" or "proceed_to_step2"
         """
         logger.info("Step 1: Checking for staggered treatment adoption")
         
@@ -241,7 +240,7 @@ class DiDWorkflow:
             "is_staggered": is_staggered,
             "n_cohorts": n_cohorts,
             "cohort_summary": cohort_summary.to_dict() if isinstance(cohort_summary, pd.DataFrame) else cohort_summary,
-            "recommendation": "proceed_to_step2" if is_staggered else "proceed_to_step4"
+            "recommendation": "proceed_to_step2" if is_staggered else "proceed_to_step3"
         }
         
         # Build response message
@@ -260,11 +259,11 @@ class DiDWorkflow:
             result["message"] = (
                 "Step 1 Result: Non-Staggered Treatment\n\n"
                 "- Treatment type: Single adoption time or canonical 2x2\n"
-                "- Implication: Standard TWFE may be valid\n\n"
-                "Recommendation: Proceed to Step 4\n"
-                "TWFE is not problematic for non-staggered treatments.\n"
-                "You can skip diagnostic steps and proceed to parallel trends assessment.\n\n"
-                "Next: Run Step 4 - Assess parallel trends"
+                "- Implication: Standard TWFE is valid\n\n"
+                "Recommendation: Skip Step 2, proceed to Step 3\n"
+                "TWFE diagnostics are unnecessary for non-staggered treatments,\n"
+                "but estimation (Step 3) is still required before assessing parallel trends.\n\n"
+                "Next: Run Step 3 - Apply estimator"
             )
         
         return result
@@ -520,10 +519,11 @@ class DiDWorkflow:
         """
         logger.info("Step 4: Assessing parallel trends")
         
-        if self.workflow_state["step"] < 3 and self.workflow_state["staggered"]:
+        if self.workflow_state["step"] < 3:
             return {
                 "status": "error",
-                "message": "Please complete Step 3 (estimation) first"
+                "message": "Please complete Step 3 (estimation) first. "
+                "Parallel trends assessment requires estimation results."
             }
         
         # Run parallel trends tests

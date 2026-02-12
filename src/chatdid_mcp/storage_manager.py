@@ -7,13 +7,11 @@ according to best practices.
 """
 
 import os
-import shutil
 import base64
 import logging
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
-from collections import defaultdict
 from urllib.parse import urlparse, unquote
 
 logger = logging.getLogger(__name__)
@@ -68,7 +66,6 @@ class StorageManager:
         Returns:
             List of (dir_type, Path) tuples in priority order
         """
-        import sys
         import platform
 
         directories = []
@@ -92,7 +89,7 @@ class StorageManager:
             try:
                 # Try Windows API for proper localized paths
                 import ctypes.wintypes
-                from ctypes import windll, c_wchar_p
+                from ctypes import windll
 
                 CSIDL_PERSONAL = 5  # My Documents
                 CSIDL_PROFILE = 40  # Downloads (Vista+)

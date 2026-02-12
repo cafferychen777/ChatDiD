@@ -98,7 +98,7 @@ class REstimators:
 
             # Parse formula to extract treatment variable
             import re
-            match = re.search(r'~\s*(\w+)', formula)
+            match = re.search(r'~\s*([\w.]+)', formula)
             if not match:
                 return {
                     "status": "error",
@@ -206,7 +206,7 @@ class REstimators:
                         "message": f"Bacon ran but extraction failed: {e}",
                         "raw_output": str(result)
                     }
-                except:
+                except Exception:
                     raise e
             
             return {
@@ -365,11 +365,11 @@ class REstimators:
                 total_weights = np.abs(weights_array).sum()
                 n_negative = negative_weights_mask.sum()
                 negative_weight_share = abs(negative_weights) / total_weights if total_weights > 0 else 0
-            except:
-                # Fallback
-                negative_weights = 0
-                negative_weight_share = 0
-                n_negative = 0
+            except Exception as e:
+                raise ValueError(
+                    f"TWFE weights computation succeeded but extraction failed: {e}. "
+                    f"This may indicate an incompatible TwoWayFEWeights version."
+                ) from e
             
             # Robustness measure
             sensitivity = result.rx2('sensitivity_measure')[0] if 'sensitivity_measure' in result.names else None
@@ -718,7 +718,8 @@ class REstimators:
             # Get row names before conversion
             try:
                 row_names = list(robjects.r['rownames'](coef_table))
-            except:
+            except Exception as e:
+                logger.warning(f"Could not extract row names from coefficient table: {e}")
                 row_names = None
             
             # Convert to pandas dataframe for easier processing
@@ -858,7 +859,8 @@ class REstimators:
             # Get number of observations
             try:
                 n_obs = int(sa_result.rx2('nobs')[0])
-            except:
+            except Exception as e:
+                logger.warning(f"Could not extract n_obs from fixest result: {e}")
                 n_obs = len(data)
             
             logger.info(f"Sun & Abraham estimation completed with {len(event_study)} time periods")
@@ -1538,8 +1540,8 @@ class REstimators:
                     try:
                         result_names = robjects.r('names')(sensitivity_results_r)
                         logger.info(f"Result structure names: {list(result_names)}")
-                    except:
-                        logger.warning("Could not extract result names")
+                    except Exception as e:
+                        logger.warning(f"Could not extract result names: {e}")
                     
                     # Extract confidence intervals - HonestDiD uses 'lb' and 'ub' 
                     lower_ci = sensitivity_results_r.rx2('lb')
@@ -1550,10 +1552,10 @@ class REstimators:
                         try:
                             lower_ci = sensitivity_results_r.rx2('lowerCI')
                             upper_ci = sensitivity_results_r.rx2('upperCI')
-                        except:
+                        except Exception as e:
                             return {
                                 "status": "error",
-                                "message": "Could not extract confidence intervals from sensitivity results"
+                                "message": f"Could not extract confidence intervals from sensitivity results: {e}"
                             }
                     
                     for i, m in enumerate(m_values):
@@ -1667,10 +1669,10 @@ class REstimators:
                         try:
                             lower_ci = sensitivity_results_r.rx2('lowerCI')
                             upper_ci = sensitivity_results_r.rx2('upperCI')
-                        except:
+                        except Exception as e:
                             return {
                                 "status": "error",
-                                "message": "Could not extract confidence intervals from smoothness results"
+                                "message": f"Could not extract confidence intervals from smoothness results: {e}"
                             }
                     
                     for i, m in enumerate(m_values):
@@ -2314,7 +2316,8 @@ class REstimators:
             # Extract number of observations
             try:
                 n_obs = int(result.rx2("N")[0]) if hasattr(result, "N") else len(data)
-            except:
+            except Exception as e:
+                logger.warning(f"Could not extract n_obs from DCDH result: {e}")
                 n_obs = len(data)
             
             return {
@@ -2740,40 +2743,25 @@ class REstimators:
             result["att_by_period"] = att_by_period
 
             # Extract model information with safe access
-            try:
-                if CV:
-                    r_cv = gsynth_result.rx2('r.cv')
-                    result["n_factors"] = int(r_cv[0]) if r_cv is not robjects.NULL else r_range[1]
-                else:
-                    result["n_factors"] = r_range[1]
-            except:
-                result["n_factors"] = r_range[1]
-
-            try:
-                n_t = gsynth_result.rx2('N.t')
-                result["n_treated"] = int(n_t[0]) if n_t is not robjects.NULL else None
-            except:
-                result["n_treated"] = None
-
-            try:
-                n_co = gsynth_result.rx2('N.co')
-                result["n_control"] = int(n_co[0]) if n_co is not robjects.NULL else None
-            except:
-                result["n_control"] = None
-
-            try:
-                t_val = gsynth_result.rx2('T')
-                result["n_periods"] = int(t_val[0]) if t_val is not robjects.NULL else None
-            except:
-                result["n_periods"] = None
+            for field, extractor in [
+                ("n_factors", lambda: int(gsynth_result.rx2('r.cv')[0]) if CV else r_range[1]),
+                ("n_treated", lambda: int(gsynth_result.rx2('N.t')[0])),
+                ("n_control", lambda: int(gsynth_result.rx2('N.co')[0])),
+                ("n_periods", lambda: int(gsynth_result.rx2('T')[0])),
+            ]:
+                try:
+                    result[field] = extractor()
+                except Exception as e:
+                    logger.warning(f"Could not extract gsynth {field}: {e}")
+                    result[field] = r_range[1] if field == "n_factors" else None
 
             # Pre-treatment fit
             try:
                 mspe = gsynth_result.rx2('pre.sd')
                 if mspe is not None and mspe is not robjects.NULL:
                     result["pre_treatment_mspe"] = float(mspe[0])
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"Could not extract gsynth pre_treatment_mspe: {e}")
 
             logger.info(f"gsynth complete: ATT = {result['overall_att']['estimate']:.4f}, factors = {result['n_factors']}")
             return result
@@ -3394,7 +3382,6 @@ class REstimators:
                 r_data = robjects.conversion.py2rpy(data)
 
             etwfe_pkg = self.r_packages['etwfe']
-            fixest_pkg = self.r_packages['fixest']
 
             # Build etwfe arguments
             # etwfe(fml, tvar, gvar, data, ...)
@@ -3450,7 +3437,6 @@ class REstimators:
             # Extract event study estimates
             event_study = {}
             overall_estimates = []
-            overall_weights = []
 
             for idx, row in emfx_df.iterrows():
                 # emfx returns columns: event, estimate, std.error, statistic, p.value, conf.low, conf.high
