@@ -581,7 +581,7 @@ async def workflow(
         if results["status"] == "complete":
             return results["final_report"]
         else:
-            return f"Workflow incomplete. Last successful step: {results.get('last_step', 'None')}"
+            return f"Workflow failed at step {results.get('failed_step', '?')}."
 
     except Exception as e:
         logger.error(f"Error in DID workflow: {e}")
@@ -2138,12 +2138,7 @@ async def create_event_study_plot(
         if isinstance(result, dict) and result.get("status") == "error":
             return f"Error creating event study plot: {result['message']}"
 
-        # If display_mode was "display", result is ImageContent directly
-        # Check using type name to avoid import issues
-        if hasattr(result, "__class__") and result.__class__.__name__ == "ImageContent":
-            return result
-
-        # Otherwise result is a dict with metadata
+        # display_mode is "both" or "save", so result is always a dict
         if not isinstance(result, dict):
             return f"Unexpected result type: {type(result)}"
 
@@ -2283,7 +2278,6 @@ async def create_diagnostic_plots(
         logger.info(
             f"Available diagnostics keys: {list(analyzer_instance.diagnostics.keys())}"
         )
-        logger.info(f"Diagnostics content: {analyzer_instance.diagnostics}")
 
         result = await analyzer_instance.create_diagnostic_plots(
             backend=backend, save_path=save_path
@@ -2599,7 +2593,7 @@ async def export_results(
             if not results:
                 # Try to find most recent result
                 for key in reversed(list(analyzer.results.keys())):
-                    if key not in ["diagnostics", "workflow"]:
+                    if key != "latest":
                         results = analyzer.results[key]
                         results_key = key
                         break
@@ -2611,7 +2605,7 @@ async def export_results(
             available_keys = [
                 k
                 for k in analyzer.results.keys()
-                if k not in ["latest", "diagnostics", "workflow"]
+                if k != "latest"
             ]
             if not available_keys:
                 return "Error: No results found to export. Please run a DID estimation method first."
@@ -2811,7 +2805,7 @@ async def export_comparison(
             methods = [
                 k
                 for k in analyzer.results.keys()
-                if k not in ["latest", "diagnostics", "workflow"]
+                if k != "latest"
             ]
 
         if not methods:
@@ -2829,7 +2823,7 @@ async def export_comparison(
             available_keys = [
                 k
                 for k in analyzer.results.keys()
-                if k not in ["latest", "diagnostics", "workflow"]
+                if k != "latest"
             ]
             return f"""Error: None of the specified methods found.
 

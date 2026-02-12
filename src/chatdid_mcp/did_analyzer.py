@@ -1018,8 +1018,7 @@ class DiDAnalyzer:
         if results_key in self.results:
             return self.results[results_key]
 
-        available_keys = [k for k in self.results.keys()
-                          if k not in ["latest", "diagnostics", "workflow"]]
+        available_keys = [k for k in self.results.keys() if k != "latest"]
         available_str = "', '".join(available_keys) if available_keys else "None"
         return {
             "status": "error",
