@@ -2,7 +2,7 @@
 
 This directory contains example datasets for testing and demonstrating ChatDiD's difference-in-differences analysis capabilities. These datasets cover various DID scenarios from classic papers to modern staggered adoption designs.
 
-## 📊 Available Datasets
+## Available Datasets
 
 ### 1. **mpdta.csv** - Callaway & Sant'Anna (2021)
 **Source**: `did` R package example data  
@@ -98,7 +98,7 @@ This directory contains example datasets for testing and demonstrating ChatDiD's
 
 ---
 
-## 🚀 Quick Start Examples
+## Quick Start Examples
 
 ### Load Data in ChatDiD
 ```python
@@ -136,7 +136,7 @@ diagnose_twfe(
 3. Event study analysis
 4. Sensitivity testing
 
-## 📚 References
+## References
 
 1. **Card, D., & Krueger, A. B. (1994)**. Minimum wages and employment: A case study of the fast-food industry in New Jersey and Pennsylvania. *American Economic Review*, 84(4), 772-793.
 
@@ -146,7 +146,7 @@ diagnose_twfe(
 
 4. **Roth, J., Sant'Anna, P. H., Bilinski, A., & Poe, J. (2023)**. What's trending in difference-in-differences? A synthesis of the recent econometrics literature. *Journal of Econometrics*, 235(2), 2218-2244.
 
-## 💡 Tips for Analysis
+## Tips for Analysis
 
 - **Always start with data exploration** to understand your panel structure
 - **Run TWFE diagnostics** before choosing an estimator

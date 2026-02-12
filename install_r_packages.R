@@ -18,12 +18,12 @@ check_and_install <- function(pkg, description = "") {
 
     tryCatch({
       install.packages(pkg, repos = "https://cloud.r-project.org/")
-      cat(sprintf("✓ %s installed successfully\n\n", pkg))
+      cat(sprintf("[OK] %s installed successfully\n\n", pkg))
     }, error = function(e) {
-      cat(sprintf("✗ Failed to install %s: %s\n\n", pkg, e$message))
+      cat(sprintf("[ERROR] Failed to install %s: %s\n\n", pkg, e$message))
     })
   } else {
-    cat(sprintf("✓ %s is already installed\n", pkg))
+    cat(sprintf("[OK] %s is already installed\n", pkg))
   }
 }
 
@@ -57,9 +57,9 @@ if (!requireNamespace("devtools", quietly = TRUE)) {
 cat("Installing synthdid (Arkhangelsky et al. 2019)...\n")
 tryCatch({
   devtools::install_github("synth-inference/synthdid", quiet = TRUE)
-  cat("✓ synthdid installed successfully\n\n")
+  cat("[OK] synthdid installed successfully\n\n")
 }, error = function(e) {
-  cat(sprintf("✗ Failed to install synthdid: %s\n", e$message))
+  cat(sprintf("[ERROR] Failed to install synthdid: %s\n", e$message))
   cat("Note: synthdid is optional. Install manually with:\n")
   cat("  devtools::install_github('synth-inference/synthdid')\n\n")
 })
@@ -84,10 +84,10 @@ installed <- sapply(critical_packages, function(pkg) {
 cat(sprintf("\nCritical packages installed: %d/%d\n", sum(installed), length(critical_packages)))
 
 if (all(installed)) {
-  cat("\n✓ All critical packages successfully installed!\n")
-  cat("✓ ChatDiD is ready to use.\n\n")
+  cat("\n[OK] All critical packages successfully installed!\n")
+  cat("[OK] ChatDiD is ready to use.\n\n")
 } else {
-  cat("\n✗ Some critical packages failed to install:\n")
+  cat("\n[ERROR] Some critical packages failed to install:\n")
   missing <- critical_packages[!installed]
   for (pkg in missing) {
     cat(sprintf("  - %s\n", pkg))

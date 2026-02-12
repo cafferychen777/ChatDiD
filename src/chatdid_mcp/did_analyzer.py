@@ -7,28 +7,13 @@ difference-in-differences analysis operations.
 
 import pandas as pd
 import numpy as np
-
-# Configure matplotlib backend BEFORE importing pyplot to prevent Dock icon on macOS
-import matplotlib
-matplotlib.use('Agg')  # Non-interactive backend (no GUI, no Dock icon)
-import matplotlib.pyplot as plt
-import seaborn as sns
-import plotly.graph_objects as go
-import plotly.express as px
-from typing import Dict, List, Optional, Tuple, Any, Union
+from typing import Dict, List, Optional, Any
 import logging
-import sys
 from pathlib import Path
-import json
 from scipy import stats
 from .visualization import DiDVisualizer
 
-# Configure logging to stderr only (MCP STDIO transport requirement)
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stderr)]
-)
+logger = logging.getLogger(__name__)
 
 try:
     import rpy2.robjects as robjects
@@ -40,8 +25,6 @@ try:
 except ImportError as e:
     R_AVAILABLE = False
     logging.warning(f"R integration not available: {e}. Some features will be limited.")
-
-logger = logging.getLogger(__name__)
 
 
 class DiDAnalyzer:
@@ -102,7 +85,10 @@ class DiDAnalyzer:
                 "HonestDiD",        # Sensitivity analysis
                 "pretrends",        # Power analysis
                 "gsynth",           # Generalized synthetic control
-                "synthdid"          # Synthetic difference-in-differences
+                "synthdid",         # Synthetic difference-in-differences
+                "DRDID",            # Doubly robust DID (Sant'Anna & Zhao 2020)
+                "etwfe",            # Extended TWFE (Wooldridge 2021)
+                "panelView",        # Panel data visualization (Mou, Liu & Xu 2023)
             ]
 
             for package in r_packages:
@@ -125,17 +111,26 @@ class DiDAnalyzer:
         """
         Prepare data for DID estimation by auto-creating necessary variables.
 
+        This is the SINGLE SOURCE OF TRUTH for all DID data preprocessing.
+        All callers (server tools, workflow, etc.) should delegate here.
+
         This method is idempotent - calling it multiple times is safe.
 
-        Creates:
-        - cohort_auto: Numeric cohort variable from binary treatment (if needed)
-        - unit_id_numeric: Numeric unit ID from string unit names (if needed)
+        Auto-detects whether treatment_col is:
+        - Binary (0/1): creates cohort_auto from first treatment time
+        - Non-binary (already a cohort): uses it directly as cohort variable
+
+        Also handles:
+        - String unit IDs → numeric unit_id_numeric
 
         Args:
             unit_col: Unit identifier column name
             time_col: Time variable column name
-            treatment_col: Treatment indicator column name
-            cohort_col: Optional cohort variable name (if provided, will be used)
+            treatment_col: Treatment indicator or cohort column name.
+                If binary (0/1), a cohort variable will be auto-created.
+                If non-binary, it is treated as the cohort variable directly.
+            cohort_col: Explicit cohort variable name. If provided and exists
+                in data, takes precedence over auto-detection.
 
         Returns:
             Dict with actual column names to use:
@@ -147,29 +142,56 @@ class DiDAnalyzer:
 
         data = self.data
         actual_unit_col = unit_col
-        actual_cohort_col = cohort_col
 
-        # Auto-create cohort variable if needed
-        if not cohort_col or cohort_col not in data.columns:
-            # Check if cohort_auto already exists
-            if 'cohort_auto' not in data.columns:
-                treatment_by_unit_time = data.groupby([unit_col, time_col])[treatment_col].first().reset_index()
-                first_treated = treatment_by_unit_time[treatment_by_unit_time[treatment_col] == 1].groupby(unit_col)[time_col].min()
+        # --- Determine cohort column ---
+        if cohort_col and cohort_col in data.columns:
+            # Explicit cohort provided and exists: use it directly
+            actual_cohort_col = cohort_col
+        elif treatment_col in data.columns:
+            # Auto-detect: is treatment_col binary or already a cohort?
+            unique_vals = data[treatment_col].dropna().unique()
+            is_binary = len(unique_vals) <= 2 and set(unique_vals).issubset({0, 1, True, False})
 
-                self.data['cohort_auto'] = self.data[unit_col].map(first_treated).fillna(0).astype(int)
-                logger.info(f"Auto-created cohort variable 'cohort_auto' from binary treatment")
+            if is_binary:
+                # Binary treatment → auto-create cohort from first treatment time
+                if 'cohort_auto' not in data.columns:
+                    treatment_by_unit_time = data.groupby([unit_col, time_col])[treatment_col].first().reset_index()
+                    first_treated = treatment_by_unit_time[treatment_by_unit_time[treatment_col] == 1].groupby(unit_col)[time_col].min()
+                    self.data['cohort_auto'] = self.data[unit_col].map(first_treated).fillna(0).astype(int)
+                    logger.info("Auto-created cohort variable 'cohort_auto' from binary treatment")
+                actual_cohort_col = 'cohort_auto'
+            else:
+                # Non-binary → treat as cohort variable directly
+                actual_cohort_col = treatment_col
+        else:
+            actual_cohort_col = cohort_col
 
-            actual_cohort_col = 'cohort_auto'
-            self.config['cohort_col'] = actual_cohort_col
+        # --- Normalize never-treated encoding to 0 ---
+        # Different datasets encode never-treated units as NaN, Inf, or large
+        # sentinel values (e.g. 9999).  Our canonical convention is 0.
+        # Normalizing here means ALL downstream code can simply use > 0
+        # to identify treated cohorts.
+        cohort = self.data[actual_cohort_col]
+        never_treated = cohort.isna()
+        if cohort.dtype.kind == 'f':  # float columns may contain Inf
+            never_treated = never_treated | np.isinf(cohort)
+        never_treated = never_treated | (cohort >= 9999)
+        n_normalized = never_treated.sum()
+        if n_normalized > 0:
+            self.data.loc[never_treated, actual_cohort_col] = 0
+            logger.info(
+                f"Normalized {n_normalized} never-treated values to 0 "
+                f"in '{actual_cohort_col}' (was NaN/Inf/>=9999)"
+            )
 
-        # Auto-create numeric unit ID if needed
+        self.config['cohort_col'] = actual_cohort_col
+
+        # --- Ensure numeric unit IDs ---
         if data[unit_col].dtype == 'object':
-            # Check if unit_id_numeric already exists
             if 'unit_id_numeric' not in data.columns:
                 unit_id_map = {name: idx for idx, name in enumerate(data[unit_col].unique())}
                 self.data['unit_id_numeric'] = self.data[unit_col].map(unit_id_map)
                 logger.info(f"Auto-created numeric unit ID 'unit_id_numeric' from string '{unit_col}'")
-
             actual_unit_col = 'unit_id_numeric'
             self.config['unit_col'] = actual_unit_col
             self.config['unit_col_original'] = unit_col
@@ -216,14 +238,23 @@ class DiDAnalyzer:
             else:
                 raise ValueError(f"Unsupported file type: {file_type}")
 
-            # Clear previous analysis results when loading new data
-            # This prevents mixing diagnostics/results from different datasets
+            # Clear ALL previous state when loading new data.
+            # This prevents mixing results/config/workflow from different datasets.
             if self.diagnostics:
                 logger.info("Clearing previous diagnostic results (new data loaded)")
                 self.diagnostics = {}
             if self.results:
                 logger.info("Clearing previous estimation results (new data loaded)")
                 self.results = {}
+            self.config = {
+                "unit_col": None,
+                "time_col": None,
+                "outcome_col": None,
+                "treatment_col": None,
+                "cohort_col": None,
+            }
+            self.workflow.reset()
+            logger.info("Reset config and workflow state (new data loaded)")
 
             # Basic data info
             info = {
@@ -432,23 +463,14 @@ class DiDAnalyzer:
                 **kwargs
             )
         elif method == "efficient":
-            # ⚠️ EFFICIENT ESTIMATOR IS DISABLED ⚠️
+            # EFFICIENT ESTIMATOR IS DISABLED
             logger.warning("Efficient estimator is disabled due to systematic issues. Falling back to imputation_bjs.")
             return {
                 "status": "error",
-                "message": "⚠️ Efficient Estimator is DISABLED due to systematic issues across multiple datasets. "
-                           "Use Callaway & Sant'Anna, BJS Imputation, or Gardner Two-Stage instead. "
+                "message": "Efficient estimator is disabled due to systematic issues observed across multiple datasets. "
+                           "Use Callaway and Sant'Anna, BJS Imputation, or Gardner Two-Stage instead. "
                            "See KNOWN_ISSUES.md for details."
             }
-            # Original code below is disabled
-            # return self.r_estimators.efficient_estimator(
-            #     data=self.data,
-            #     outcome_col=self.config['outcome_col'],
-            #     unit_col=self.config['unit_col'],
-            #     time_col=self.config['time_col'],
-            #     cohort_col=self.config.get('cohort_col', self.config['treatment_col']),
-            #     **kwargs
-            # )
         elif method == "gsynth":
             return self.r_estimators.gsynth_estimator(
                 data=self.data,
@@ -468,13 +490,81 @@ class DiDAnalyzer:
                 cohort_col=self.config.get('cohort_col'),
                 **kwargs
             )
+        elif method == "drdid":
+            return self.r_estimators.drdid_estimator(
+                data=self.data,
+                outcome_col=self.config['outcome_col'],
+                unit_col=self.config['unit_col'],
+                time_col=self.config['time_col'],
+                treatment_col=self.config['treatment_col'],
+                **kwargs
+            )
+        elif method == "etwfe":
+            return self.r_estimators.etwfe_estimator(
+                data=self.data,
+                outcome_col=self.config['outcome_col'],
+                unit_col=self.config['unit_col'],
+                time_col=self.config['time_col'],
+                cohort_col=self.config.get('cohort_col', self.config['treatment_col']),
+                treatment_col=self.config.get('treatment_col'),
+                **kwargs
+            )
         else:
             return {"status": "error", "message": f"Unknown method: {method}"}
     
+    def _prepare_event_study_matrices(self, latest_results: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Extract (betahat, sigma, time_vec) from event study results.
+
+        This is the single source of truth for preparing the numeric arrays
+        that pretrends and HonestDiD R packages consume. Handles covariance
+        matrix availability and period reordering.
+
+        Returns:
+            Dict with keys: betahat, sigma, time_vec, covariance_method
+        """
+        event_study = latest_results.get("event_study", {})
+        if not event_study:
+            raise ValueError("No event study results available")
+
+        sorted_times = sorted(event_study.keys())
+        betahat = np.array([event_study[t]["estimate"] for t in sorted_times])
+        time_vec = np.array(sorted_times)
+
+        if "event_study_vcov" in latest_results:
+            vcov_info = latest_results["event_study_vcov"]
+            sigma = np.array(vcov_info["matrix"])
+            vcov_periods = vcov_info.get("periods", sorted_times)
+
+            # Reorder matrix if periods don't match sorted order
+            if vcov_periods != sorted_times:
+                period_mapping = {p: i for i, p in enumerate(vcov_periods)}
+                reorder_indices = [period_mapping[t] for t in sorted_times if t in period_mapping]
+                if len(reorder_indices) == len(sorted_times):
+                    sigma = sigma[np.ix_(reorder_indices, reorder_indices)]
+                    logger.info("Reordered covariance matrix to match period ordering")
+                else:
+                    logger.warning("Period mismatch in covariance matrix, using diagonal fallback")
+                    sigma = np.diag([event_study[t]["se"] ** 2 for t in sorted_times])
+                    return {"betahat": betahat, "sigma": sigma, "time_vec": time_vec,
+                            "covariance_method": "diagonal_fallback"}
+
+            covariance_method = vcov_info.get("extraction_method", "full_matrix")
+        else:
+            sigma = np.diag([event_study[t]["se"] ** 2 for t in sorted_times])
+            covariance_method = "diagonal_fallback"
+
+        return {
+            "betahat": betahat,
+            "sigma": sigma,
+            "time_vec": time_vec,
+            "covariance_method": covariance_method
+        }
+
     async def assess_parallel_trends(self) -> Dict[str, Any]:
         """
         Comprehensive parallel trends assessment using modern methods.
-        
+
         Implements Roth et al. (2023) best practices:
         1. Power analysis (pretrends package)
         2. Sensitivity analysis (HonestDiD package)
@@ -483,21 +573,13 @@ class DiDAnalyzer:
         Returns:
             Dict with comprehensive parallel trends assessment
         """
-        if not self.results:
+        if not self.results or "latest" not in self.results:
             return {
                 "status": "error",
                 "message": "No estimation results available. Please run a DID estimator first."
             }
-        
-        # Get latest results
-        latest_key = max(self.results.keys()) if self.results else None
-        if not latest_key:
-            return {
-                "status": "error", 
-                "message": "No valid estimation results found"
-            }
-        
-        latest_results = self.results[latest_key]
+
+        latest_results = self.results["latest"]
         event_study = latest_results.get("event_study", {})
         
         if not event_study:
@@ -508,23 +590,18 @@ class DiDAnalyzer:
         
         try:
             logger.info("Running comprehensive parallel trends assessment")
-            
+
+            # Prepare matrices (single source of truth)
+            matrices = self._prepare_event_study_matrices(latest_results)
+            betahat = matrices["betahat"]
+            sigma = matrices["sigma"]
+            time_vec = matrices["time_vec"]
+            covariance_method = matrices["covariance_method"]
+            sorted_times = sorted(event_study.keys())
+
             # Step 1: Power Analysis using pretrends
             logger.info("Step 1: Pretrends power analysis")
-            
-            sorted_times = sorted(event_study.keys())
-            betahat = np.array([event_study[t]["estimate"] for t in sorted_times])
-            time_vec = np.array(sorted_times)
-            
-            # Use full covariance matrix if available
-            if "event_study_vcov" in latest_results:
-                vcov_info = latest_results["event_study_vcov"]
-                sigma = np.array(vcov_info["matrix"])
-                covariance_method = vcov_info["extraction_method"]
-            else:
-                sigma = np.diag([event_study[t]["se"] ** 2 for t in sorted_times])
-                covariance_method = "diagonal_fallback"
-            
+
             # Run power analysis for multiple power levels
             power_results = {}
             power_levels = [0.5, 0.8, 0.9]
@@ -688,21 +765,13 @@ class DiDAnalyzer:
         Returns:
             Dict with finalized inference results
         """
-        if not self.results:
+        if not self.results or "latest" not in self.results:
             return {
                 "status": "error",
                 "message": "No estimation results available. Please run estimation first."
             }
-        
-        # Get latest results
-        latest_key = max(self.results.keys()) if self.results else None
-        if not latest_key:
-            return {
-                "status": "error",
-                "message": "No valid estimation results found"
-            }
-        
-        latest_results = self.results[latest_key]
+
+        latest_results = self.results["latest"]
         
         try:
             logger.info(f"Finalizing inference with cluster_level: {cluster_level}")
@@ -806,24 +875,28 @@ class DiDAnalyzer:
         return recommendations if recommendations else ["Complete assessment - review all components"]
     
     # Helper Methods for Inference Finalization
+    def _resolve_cluster_col(self, cluster_level):
+        """Map a cluster level name ('unit', 'time', or column name) to an actual column."""
+        if not cluster_level:
+            return None
+        if cluster_level == "unit":
+            return self.config.get("unit_col")
+        if cluster_level == "time":
+            return self.config.get("time_col")
+        return cluster_level
+
     def _determine_clustering_strategy(self, cluster_level):
         """Determine appropriate clustering strategy."""
         if not cluster_level:
             return "no_clustering"
-        
-        # Map standard names to actual columns
-        if cluster_level == "unit" and self.config:
-            cluster_col = self.config.get("unit_var")
-        elif cluster_level == "time" and self.config:
-            cluster_col = self.config.get("time_var")
-        else:
-            cluster_col = cluster_level
-        
-        if cluster_col and cluster_col in self.data.columns:
+
+        cluster_col = self._resolve_cluster_col(cluster_level)
+
+        if cluster_col and self.data is not None and cluster_col in self.data.columns:
             return f"cluster_by_{cluster_col}"
         else:
             return "invalid_cluster_variable"
-    
+
     def _diagnose_cluster_structure(self, cluster_level):
         """Diagnose clustering structure for inference."""
         diagnostics = {
@@ -832,39 +905,31 @@ class DiDAnalyzer:
             "treated_cluster_count": None,
             "recommendation": "standard_clustering"
         }
-        
-        if not cluster_level or not self.data is not None:
+
+        if not cluster_level or self.data is None:
             return diagnostics
-        
+
         try:
-            # Map cluster level to actual column
-            if cluster_level == "unit" and self.config:
-                cluster_col = self.config.get("unit_var")
-            elif cluster_level == "time" and self.config:
-                cluster_col = self.config.get("time_var")
-            else:
-                cluster_col = cluster_level
-            
+            cluster_col = self._resolve_cluster_col(cluster_level)
+
             if cluster_col and cluster_col in self.data.columns:
-                # Count total clusters
                 total_clusters = self.data[cluster_col].nunique()
                 diagnostics["cluster_count"] = total_clusters
-                
-                # Count treated clusters (if treatment info available)
-                if self.config and self.config.get("cohort_var") in self.data.columns:
-                    cohort_col = self.config["cohort_var"]
-                    treated_data = self.data[self.data[cohort_col] < 10000]  # Exclude never-treated
+
+                # Count treated clusters (if cohort info available)
+                cohort_col = self.config.get("cohort_col")
+                if cohort_col and cohort_col in self.data.columns:
+                    treated_data = self.data[self.data[cohort_col] > 0]  # cohort > 0 means treated
                     treated_clusters = treated_data[cluster_col].nunique()
                     diagnostics["treated_cluster_count"] = treated_clusters
-                    
-                    # Check for few treated clusters (< 10 is common threshold)
+
                     if treated_clusters < 10:
                         diagnostics["few_treated_clusters"] = True
                         diagnostics["recommendation"] = "wild_bootstrap"
-                
+
         except Exception as e:
             logger.warning(f"Could not diagnose cluster structure: {e}")
-        
+
         return diagnostics
     
     async def _apply_wild_bootstrap_inference(self, latest_results, cluster_level):
@@ -991,7 +1056,7 @@ class DiDAnalyzer:
             available_str = "', '".join(available_keys) if available_keys else "None"
             return {
                 "status": "error",
-                "message": f"Results key '{results_key}' not found. Available keys: '{available_str}'. Use 'latest' for most recent results."
+                "message": f"Results key '{results_key}' not found. Available keys: '{available_str}'. Use 'latest' for the primary estimation results."
             }
 
         # Set backend
@@ -1015,8 +1080,8 @@ class DiDAnalyzer:
         Create diagnostic plots from TWFE analysis.
 
         Prerequisites:
-            - Must run `diagnose_goodman_bacon()` for Bacon decomposition plots
-            - Must run `analyze_twfe_weights()` for TWFE weights plots
+            - Must run diagnose_goodman_bacon() for Bacon decomposition plots
+            - Must run analyze_twfe_weights() for TWFE weights plots
             - At least one diagnostic analysis must be completed before calling
 
         Args:
@@ -1100,7 +1165,7 @@ class DiDAnalyzer:
             available_str = "', '".join(available_keys) if available_keys else "None"
             return {
                 "status": "error",
-                "message": f"Results key '{results_key}' not found. Available keys: '{available_str}'. Use 'latest' for most recent results."
+                "message": f"Results key '{results_key}' not found. Available keys: '{available_str}'. Use 'latest' for the primary estimation results."
             }
 
         # Set backend

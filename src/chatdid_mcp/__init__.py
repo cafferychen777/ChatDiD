@@ -9,16 +9,28 @@ __version__ = "1.0.0"
 __author__ = "ChatDiD Team"
 __email__ = "team@chatdid.com"
 
-# CRITICAL: Configure matplotlib backend BEFORE any imports to prevent macOS Dock icon
+# --- Global initialization (order matters) ---
+
+# 1. Configure matplotlib backend BEFORE any imports to prevent macOS Dock icon
 import matplotlib
-matplotlib.use('Agg')  # Non-interactive backend (no GUI, no Dock icon on macOS)
+matplotlib.use('Agg')
 
-# Disable R graphics devices (prevent GUI windows)
+# 2. Disable R graphics devices (prevent GUI windows)
 import os
-os.environ['R_DEFAULT_DEVICE'] = 'pdf'  # Use non-interactive device for R
+os.environ['R_DEFAULT_DEVICE'] = 'pdf'
 
-# For FastMCP 2.0, the mcp instance is exported from server.py
-# FastMCP CLI will automatically discover and use it
+# 3. Logging: single configuration point for the entire package.
+#    MCP STDIO transport requires all log output on stderr.
+#    Individual modules should only use logging.getLogger(__name__).
+import logging
+import sys
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stderr)]
+)
+
+# 4. Export the FastMCP server instance
 from .server import mcp
 
 __all__ = ["mcp"]

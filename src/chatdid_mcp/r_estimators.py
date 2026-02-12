@@ -4,17 +4,10 @@ Implements actual calls to R packages for DID analysis
 """
 
 import logging
-import sys
 from typing import Dict, Any, Optional, List
 import pandas as pd
 import numpy as np
 
-# Configure logging to stderr ONLY
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stderr)]
-)
 logger = logging.getLogger(__name__)
 
 try:
@@ -60,7 +53,10 @@ class REstimators:
             'DIDmultiplegtDYN': 'de Chaisemartin & D\'Haultfoeuille dynamic estimator (modern)',
             'staggered': 'Roth & Sant\'Anna efficient estimator',
             'gsynth': 'Generalized synthetic control (Xu 2017)',
-            'synthdid': 'Synthetic difference-in-differences (Arkhangelsky et al. 2019)'
+            'synthdid': 'Synthetic difference-in-differences (Arkhangelsky et al. 2019)',
+            'DRDID': 'Doubly robust difference-in-differences (Sant\'Anna & Zhao 2020)',
+            'etwfe': 'Extended TWFE (Wooldridge 2021)',
+            'panelView': 'Panel data visualization (Mou, Liu & Xu 2023)'
         }
         
         for pkg_name, description in required_packages.items():
@@ -219,10 +215,12 @@ class REstimators:
             }
             
         except Exception as e:
-            logger.error(f"Error in Goodman-Bacon decomposition: {e}")
+            error_msg = str(e)
+            enriched_msg = self._enrich_error_message(error_msg, "Goodman-Bacon")
+            logger.error(f"Error in Goodman-Bacon decomposition: {enriched_msg}")
             return {
                 "status": "error",
-                "message": str(e)
+                "message": enriched_msg
             }
     
     def _prepare_data_for_bacon(self, data: pd.DataFrame, treatment_var: str, 
@@ -380,10 +378,12 @@ class REstimators:
             }
             
         except Exception as e:
-            logger.error(f"Error in TWFE weights analysis: {e}")
+            error_msg = str(e)
+            enriched_msg = self._enrich_error_message(error_msg, "TWFE Weights")
+            logger.error(f"Error in TWFE weights analysis: {enriched_msg}")
             return {
                 "status": "error",
-                "message": str(e)
+                "message": enriched_msg
             }
     
     def callaway_santanna_estimator(
@@ -609,10 +609,12 @@ class REstimators:
             return result
             
         except Exception as e:
-            logger.error(f"Error in Callaway & Sant'Anna estimation: {e}")
+            error_msg = str(e)
+            enriched_msg = self._enrich_error_message(error_msg, "Callaway & Sant'Anna")
+            logger.error(f"Error in Callaway & Sant'Anna estimation: {enriched_msg}")
             return {
                 "status": "error",
-                "message": str(e)
+                "message": enriched_msg
             }
     
     def sun_abraham_estimator(
@@ -659,9 +661,9 @@ class REstimators:
                     "status": "error",
                     "message": (
                         "Sun & Abraham estimator REQUIRES sunab() function in formula.\n\n"
-                        "❌ INCORRECT (you provided):\n"
+                        "INCORRECT (you provided):\n"
                         f"   '{formula}'\n\n"
-                        "✅ CORRECT (required format):\n"
+                        "CORRECT (required format):\n"
                         "   'outcome ~ sunab(cohort_col, time_col) | unit_col + time_col'\n\n"
                         "Example for mpdta dataset:\n"
                         "   'lemp ~ sunab(first.treat, year) | countyreal + year'\n\n"
@@ -809,7 +811,7 @@ class REstimators:
                         overall_att_est = float(att_df.iloc[0]['Estimate'])
                         overall_att_se = float(att_df.iloc[0]['Std. Error'])
                         overall_att_pval = float(att_df.iloc[0]['Pr(>|t|)'])
-                        logger.info(f"✅ Successfully extracted ATT: {overall_att_est:.4f} (SE: {overall_att_se:.4f})")
+                        logger.info(f"Successfully extracted ATT: {overall_att_est:.4f} (SE: {overall_att_se:.4f})")
                     else:
                         raise ValueError("DataFrame is empty")
                 else:
@@ -821,12 +823,12 @@ class REstimators:
                         overall_att_est = float(att_df[0, 0])  # First column = Estimate
                         overall_att_se = float(att_df[0, 1])   # Second column = Std. Error
                         overall_att_pval = float(att_df[0, 3]) # Fourth column = p-value
-                        logger.info(f"✅ Extracted ATT from array: {overall_att_est:.4f} (SE: {overall_att_se:.4f})")
+                        logger.info(f"Extracted ATT from array: {overall_att_est:.4f} (SE: {overall_att_se:.4f})")
                     else:
                         raise ValueError(f"Cannot extract ATT from type {type(att_df)}")
 
             except Exception as e:
-                logger.error(f"❌ fixest ATT aggregation failed: {e}")
+                logger.error(f"fixest ATT aggregation failed: {e}")
                 import traceback
                 logger.error(f"Traceback: {traceback.format_exc()}")
                 # BUG FIX #1: Remove incorrect fallback aggregation
@@ -867,10 +869,12 @@ class REstimators:
             }
             
         except Exception as e:
-            logger.error(f"Error in Sun & Abraham estimation: {e}")
+            error_msg = str(e)
+            enriched_msg = self._enrich_error_message(error_msg, "Sun & Abraham")
+            logger.error(f"Error in Sun & Abraham estimation: {enriched_msg}")
             return {
                 "status": "error",
-                "message": str(e)
+                "message": enriched_msg
             }
     
     def bjs_imputation_estimator(
@@ -922,8 +926,8 @@ class REstimators:
                     "status": "error",
                     "message": (
                         "BJS imputation requires 'cohort_col' parameter with COHORT variable (first treatment time).\n\n"
-                        "❌ INCORRECT: Using binary treatment indicator (0/1)\n"
-                        "✅ CORRECT: Using cohort variable like 'first.treat' with values (0, 2004, 2006, 2007)\n\n"
+                        "INCORRECT: Using binary treatment indicator (0/1)\n"
+                        "CORRECT: Using cohort variable like 'first.treat' with values (0, 2004, 2006, 2007)\n\n"
                         "Example: cohort_col='first.treat'\n"
                         "  - 0 = never treated\n"
                         "  - 2004, 2006, 2007 = year first treated\n\n"
@@ -943,8 +947,8 @@ class REstimators:
                         f"cohort_col '{cohort_col}' appears to be a binary treatment indicator (0/1), "
                         "not a cohort variable.\n\n"
                         "BJS imputation requires a COHORT VARIABLE indicating WHEN treatment first occurred.\n\n"
-                        "❌ Binary indicator (0/1) - NOT valid\n"
-                        "✅ Cohort variable (0, 2004, 2006, 2007) - Valid\n\n"
+                        "Binary indicator (0/1) - NOT valid\n"
+                        "Cohort variable (0, 2004, 2006, 2007) - Valid\n\n"
                         "Please provide the correct cohort column (e.g., 'first.treat', 'cohort', 'gvar')."
                     )
                 }
@@ -1120,10 +1124,12 @@ class REstimators:
             }
             
         except Exception as e:
-            logger.error(f"Error in BJS imputation: {e}")
+            error_msg = str(e)
+            enriched_msg = self._enrich_error_message(error_msg, "BJS Imputation")
+            logger.error(f"Error in BJS imputation: {enriched_msg}")
             return {
                 "status": "error",
-                "message": str(e)
+                "message": enriched_msg
             }
     
     def gardner_two_stage_estimator(
@@ -1173,9 +1179,9 @@ class REstimators:
                     "status": "error",
                     "message": (
                         "Gardner two-stage estimator REQUIRES 'cohort_col' for proper identification.\n\n"
-                        "❌ PROBLEM: Static treatment indicators are COLLINEAR with unit + time fixed effects.\n"
+                        "PROBLEM: Static treatment indicators are COLLINEAR with unit + time fixed effects.\n"
                         "   After removing FE in stage 1, no variation remains in the treatment variable.\n\n"
-                        "✅ SOLUTION: Use event study specification with cohort variable.\n\n"
+                        "SOLUTION: Use event study specification with cohort variable.\n\n"
                         "Example: cohort_col='first.treat' (values: 0, 2004, 2006, 2007)\n"
                         "  - 0 = never treated\n"
                         "  - 2004, 2006, 2007 = year first treated\n\n"
@@ -1193,15 +1199,15 @@ class REstimators:
             if cohort_col in data.columns:
                 # Create relative time: current time - treatment time
                 data_copy['rel_time'] = data_copy[time_col] - data_copy[cohort_col]
-                # Set never-treated units to have rel_time = Inf (official did2s convention)
-                # CRITICAL: Must use Inf (not -999) to match official did2s implementation
-                # Inf is excluded from regression via ref = c(-1, Inf) in second_stage
-                never_treated_mask = (data_copy[cohort_col].isna()) | (data_copy[cohort_col] == 0) | (data_copy[cohort_col] >= 9999)
+                # Never-treated units (cohort == 0, normalized upstream by
+                # prepare_data_for_estimation) get rel_time = Inf, which did2s
+                # excludes via ref = c(-1, Inf) in the second stage.
+                never_treated_mask = data_copy[cohort_col] == 0
                 data_copy.loc[never_treated_mask, 'rel_time'] = np.inf
 
-                # CRITICAL: Create correct treatment indicator (year >= first_treat)
-                data_copy['_did2s_treat'] = 0  # Default to untreated
-                treated_mask = (data_copy[cohort_col] > 0) & (data_copy[cohort_col] < 9999) & (data_copy[time_col] >= data_copy[cohort_col])
+                # Create treatment indicator: treated when year >= first treatment
+                data_copy['_did2s_treat'] = 0
+                treated_mask = (data_copy[cohort_col] > 0) & (data_copy[time_col] >= data_copy[cohort_col])
                 data_copy.loc[treated_mask, '_did2s_treat'] = 1
                 treatment_var = '_did2s_treat'
 
@@ -1372,10 +1378,12 @@ class REstimators:
             }
             
         except Exception as e:
-            logger.error(f"Error in Gardner two-stage estimation: {e}")
+            error_msg = str(e)
+            enriched_msg = self._enrich_error_message(error_msg, "Gardner Two-Stage")
+            logger.error(f"Error in Gardner two-stage estimation: {enriched_msg}")
             return {
                 "status": "error",
-                "message": str(e)
+                "message": enriched_msg
             }
     
     def honest_did_sensitivity_analysis(
@@ -1723,10 +1731,12 @@ class REstimators:
                 }
                 
         except Exception as e:
-            logger.error(f"Error in HonestDiD sensitivity analysis: {e}")
+            error_msg = str(e)
+            enriched_msg = self._enrich_error_message(error_msg, "HonestDiD")
+            logger.error(f"Error in HonestDiD sensitivity analysis: {enriched_msg}")
             return {
                 "status": "error",
-                "message": str(e)
+                "message": enriched_msg
             }
     
     def pretrends_power_analysis(
@@ -1891,10 +1901,12 @@ class REstimators:
             }
             
         except Exception as e:
-            logger.error(f"Error in pretrends power analysis: {e}")
+            error_msg = str(e)
+            enriched_msg = self._enrich_error_message(error_msg, "pretrends")
+            logger.error(f"Error in pretrends power analysis: {enriched_msg}")
             return {
                 "status": "error",
-                "message": str(e)
+                "message": enriched_msg
             }
     
     def _interpret_pretrends_results(
@@ -2313,10 +2325,12 @@ class REstimators:
             }
             
         except Exception as e:
-            logger.error(f"Error in dCDH estimation: {e}")
+            error_msg = str(e)
+            enriched_msg = self._enrich_error_message(error_msg, "dCDH")
+            logger.error(f"Error in dCDH estimation: {enriched_msg}")
             return {
                 "status": "error",
-                "message": str(e)
+                "message": enriched_msg
             }
     
     def efficient_estimator(
@@ -2338,7 +2352,7 @@ class REstimators:
         Computes the efficient estimator for randomized staggered rollout designs,
         potentially offering substantial gains over parallel-trends-only methods.
 
-        ⚠️  IMPORTANT - Small Sample Warning:
+         IMPORTANT - Small Sample Warning:
         =====================================
         The plug-in efficient estimator (beta=None) is ASYMPTOTICALLY unbiased but may
         exhibit SUBSTANTIAL FINITE SAMPLE BIAS, especially with n < 500.
@@ -2547,10 +2561,12 @@ class REstimators:
             }
             
         except Exception as e:
-            logger.error(f"Error in efficient estimation: {e}")
+            error_msg = str(e)
+            enriched_msg = self._enrich_error_message(error_msg, "Efficient Estimator")
+            logger.error(f"Error in efficient estimation: {enriched_msg}")
             return {
                 "status": "error",
-                "message": str(e)
+                "message": enriched_msg
             }
 
     def gsynth_estimator(
@@ -2704,7 +2720,7 @@ class REstimators:
                 "se": att_se,
                 "ci_lower": ci_lower,
                 "ci_upper": ci_upper,
-                "p_value": p_value,
+                "pvalue": p_value,
             }
 
             # Extract period-by-period ATT
@@ -2758,10 +2774,12 @@ class REstimators:
             return result
 
         except Exception as e:
-            logger.error(f"Error in gsynth estimator: {e}", exc_info=True)
+            error_msg = str(e)
+            enriched_msg = self._enrich_error_message(error_msg, "gsynth")
+            logger.error(f"Error in gsynth estimator: {enriched_msg}", exc_info=True)
             return {
                 "status": "error",
-                "message": f"gsynth estimation failed: {str(e)}"
+                "message": f"gsynth estimation failed: {enriched_msg}"
             }
 
     def synthdid_estimator(
@@ -2805,7 +2823,7 @@ class REstimators:
             - comparison_methods: Results from traditional DID and SC for comparison
 
         Important Notes:
-            - **Requires all treated units to begin treatment simultaneously**
+            - Requires all treated units to begin treatment simultaneously
             - If staggered adoption, must convert to cohort-specific analysis
             - Package currently in beta, interface may change
         """
@@ -2905,11 +2923,20 @@ class REstimators:
             }
 
             # Main estimate
+            sdid_estimate = float(tau_sdid[0])
+            sdid_se = float(se_sdid)
+            if sdid_se > 0 and not np.isnan(sdid_se):
+                sdid_z = float(abs(sdid_estimate / sdid_se))
+                sdid_pval = float(2 * (1 - robjects.r['pnorm'](sdid_z)[0]))
+            else:
+                sdid_pval = 1.0
+
             result["overall_att"] = {
-                "estimate": float(tau_sdid[0]),
-                "se": float(se_sdid),
-                "ci_lower": float(tau_sdid[0] - 1.96 * se_sdid),
-                "ci_upper": float(tau_sdid[0] + 1.96 * se_sdid),
+                "estimate": sdid_estimate,
+                "se": sdid_se,
+                "ci_lower": float(sdid_estimate - 1.96 * sdid_se),
+                "ci_upper": float(sdid_estimate + 1.96 * sdid_se),
+                "pvalue": sdid_pval,
             }
 
             # Comparison with traditional methods
@@ -2956,8 +2983,777 @@ class REstimators:
             return result
 
         except Exception as e:
-            logger.error(f"Error in synthdid estimator: {e}", exc_info=True)
+            error_msg = str(e)
+            enriched_msg = self._enrich_error_message(error_msg, "synthdid")
+            logger.error(f"Error in synthdid estimator: {enriched_msg}", exc_info=True)
             return {
                 "status": "error",
-                "message": f"synthdid estimation failed: {str(e)}"
+                "message": f"synthdid estimation failed: {enriched_msg}"
+            }
+
+    # =========================================================================
+    # Troubleshooting-aware error message helpers
+    # =========================================================================
+
+    @staticmethod
+    def _enrich_error_message(error_msg: str, method_name: str) -> str:
+        """
+        Enrich error messages with troubleshooting guidance based on common issues.
+
+        Matches error patterns from the DID Troubleshooting Guide and appends
+        actionable fix suggestions.
+
+        Args:
+            error_msg: The raw error message string
+            method_name: Name of the estimation method that produced the error
+
+        Returns:
+            Enriched error message with troubleshooting hints
+        """
+        error_lower = error_msg.lower()
+        hints = []
+
+        # Singular matrix issues
+        if "singular" in error_lower or "not enough control" in error_lower:
+            hints.append(
+                "TROUBLESHOOTING: Singular matrix error.\n"
+                "  - Try switching control_group to 'notyettreated'\n"
+                "  - Try est_method='reg' instead of 'dr' (doubly robust)\n"
+                "  - Remove covariates that may cause collinearity (xformla=NULL)\n"
+                "  - Check for very small treatment cohorts and consider merging them"
+            )
+
+        # VCOV not PSD
+        if "not positive semi-definite" in error_lower or "not numerically positive" in error_lower:
+            hints.append(
+                "TROUBLESHOOTING: VCOV matrix not positive semi-definite.\n"
+                "  - Small or singleton treatment cohorts produce near-collinear regressors\n"
+                "  - Try merging cohorts with fewer than 5 units\n"
+                "  - Use heteroskedasticity-robust SEs instead of cluster-robust\n"
+                "  - Consider using bootstrap inference\n"
+                "  - Reduce the number of covariates"
+            )
+
+        # Convergence failures
+        if "convergence" in error_lower or "did not converge" in error_lower or "solver did not find" in error_lower:
+            hints.append(
+                "TROUBLESHOOTING: Convergence failure.\n"
+                "  - Simplify the model: remove covariates, reduce event window\n"
+                "  - For fixest: increase iterations with demeaning_algo(iter=10000)\n"
+                "  - For HonestDiD: use coarser grid of M values (e.g., seq(0.5, 2, 0.5))\n"
+                "  - Ensure data has sufficient variation in treatment and outcome"
+            )
+
+        # Small groups / insufficient observations
+        if "too small" in error_lower or "not enough" in error_lower or "insufficient" in error_lower:
+            hints.append(
+                "TROUBLESHOOTING: Insufficient observations.\n"
+                "  - Try control_group='notyettreated' for more comparison units\n"
+                "  - Merge small treatment cohorts into neighboring ones\n"
+                "  - Check for balanced panel: all units observed in all periods\n"
+                "  - Consider switching to a method that handles small samples better (e.g., CS with est_method='reg')"
+            )
+
+        # Numeric type issues
+        if "must be numeric" in error_lower or "not numeric" in error_lower:
+            hints.append(
+                "TROUBLESHOOTING: Non-numeric variable.\n"
+                "  - Time and group variables must be numeric (not character or factor)\n"
+                "  - Unit IDs will be auto-converted; check cohort/treatment columns\n"
+                "  - Verify data types with explore_data before estimation"
+            )
+
+        # No valid groups
+        if "no valid groups" in error_lower:
+            hints.append(
+                "TROUBLESHOOTING: No valid groups found.\n"
+                "  - The gname variable must contain first treatment times (not 0/1 binary)\n"
+                "  - Never-treated units must be coded as 0 (not NA or Inf) for CS estimator\n"
+                "  - Check: data[gname].unique() should show treatment years and 0"
+            )
+
+        # Balanced panel issues
+        if "all observations dropped" in error_lower or "balanced panel" in error_lower:
+            hints.append(
+                "TROUBLESHOOTING: Panel balance issue.\n"
+                "  - The unit ID may not uniquely identify units across time\n"
+                "  - Try panel=FALSE for repeated cross-section mode\n"
+                "  - Manually balance the panel before estimation\n"
+                "  - Check for duplicate (unit, time) observations"
+            )
+
+        # Package not available
+        if "not available" in error_lower or "not installed" in error_lower or "could not find" in error_lower:
+            hints.append(
+                "TROUBLESHOOTING: R package not available.\n"
+                "  - Install the required package in R: install.packages('package_name')\n"
+                "  - Check R version compatibility\n"
+                "  - For DIDmultiplegtDYN: requires polars package (needs Rust)\n"
+                "  - For HonestDiD: requires osqp and ROI packages"
+            )
+
+        if hints:
+            return f"{error_msg}\n\n{''.join(hints)}"
+        return error_msg
+
+    # =========================================================================
+    # DRDID estimator (Doubly Robust DID)
+    # =========================================================================
+
+    def drdid_estimator(
+        self,
+        data: pd.DataFrame,
+        outcome_col: str,
+        unit_col: str,
+        time_col: str,
+        treatment_col: str,
+        covariates: Optional[List[str]] = None,
+        panel: bool = True,
+        est_method: str = "imp",
+        boot: bool = False,
+        nboot: int = 999,
+        inffunc: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Doubly Robust Difference-in-Differences estimator (Sant'Anna & Zhao 2020).
+
+        Provides doubly robust estimation combining outcome regression and
+        inverse probability weighting for improved robustness. Consistent
+        if either the outcome model or the propensity score model is correct.
+
+        Reference:
+            Sant'Anna, P. H. C. & Zhao, J. (2020). "Doubly Robust Difference-in-
+            Differences Estimators." Journal of Econometrics, 219(1), 101-122.
+
+        Args:
+            data: Panel data (two periods for standard DRDID)
+            outcome_col: Outcome variable name
+            unit_col: Unit identifier name
+            time_col: Time variable name
+            treatment_col: Binary treatment indicator (0/1)
+            covariates: List of covariate names for the outcome and propensity models
+            panel: True for panel data, False for repeated cross-sections
+            est_method: Estimation method:
+                - "imp" (default): Improved doubly robust (Sant'Anna & Zhao 2020)
+                - "trad": Traditional doubly robust
+                - "ipw": Inverse probability weighting only
+                - "reg": Outcome regression only
+            boot: Use bootstrap for inference (default: False uses analytical)
+            nboot: Number of bootstrap replications
+            inffunc: Whether to compute influence functions (for downstream analysis)
+
+        Returns:
+            Dict with:
+            - status: "success" or "error"
+            - method: Method description
+            - overall_att: Average treatment effect on treated
+            - influence_functions: Influence function values (if requested)
+            - covariates_used: List of covariates included
+        """
+        if not R_AVAILABLE or 'DRDID' not in self.r_packages:
+            return {
+                "status": "error",
+                "message": (
+                    "DRDID R package not available. "
+                    "Install with: install.packages('DRDID')"
+                )
+            }
+
+        try:
+            logger.info(f"Running DRDID estimator (panel={panel}, est_method={est_method})")
+
+            # Convert to R dataframe
+            with localconverter(robjects.default_converter + pandas2ri.converter):
+                r_data = robjects.conversion.py2rpy(data)
+
+            drdid_pkg = self.r_packages['DRDID']
+
+            # Build covariate formula
+            if covariates and len(covariates) > 0:
+                xformla = robjects.Formula(f"~ {' + '.join(covariates)}")
+            else:
+                xformla = robjects.Formula("~ 1")
+
+            # Select the appropriate DRDID function
+            if panel:
+                # Panel data methods
+                if est_method == "imp":
+                    drdid_func = drdid_pkg.drdid_panel
+                    method_label = "Improved Doubly Robust DID (Panel)"
+                elif est_method == "trad":
+                    drdid_func = drdid_pkg.drdid_panel
+                    method_label = "Traditional Doubly Robust DID (Panel)"
+                elif est_method == "reg":
+                    drdid_func = drdid_pkg.reg_did_panel
+                    method_label = "Outcome Regression DID (Panel)"
+                elif est_method == "ipw":
+                    drdid_func = drdid_pkg.ipw_did_panel
+                    method_label = "Inverse Probability Weighting DID (Panel)"
+                else:
+                    return {
+                        "status": "error",
+                        "message": f"Unknown est_method '{est_method}'. Use 'imp', 'trad', 'reg', or 'ipw'."
+                    }
+            else:
+                # Repeated cross-section methods
+                if est_method == "imp":
+                    drdid_func = drdid_pkg.drdid_rc
+                    method_label = "Improved Doubly Robust DID (Repeated Cross-Sections)"
+                elif est_method == "trad":
+                    drdid_func = drdid_pkg.drdid_rc
+                    method_label = "Traditional Doubly Robust DID (Repeated Cross-Sections)"
+                elif est_method == "reg":
+                    drdid_func = drdid_pkg.reg_did_rc
+                    method_label = "Outcome Regression DID (Repeated Cross-Sections)"
+                elif est_method == "ipw":
+                    drdid_func = drdid_pkg.ipw_did_rc
+                    method_label = "Inverse Probability Weighting DID (Repeated Cross-Sections)"
+                else:
+                    return {
+                        "status": "error",
+                        "message": f"Unknown est_method '{est_method}'. Use 'imp', 'trad', 'reg', or 'ipw'."
+                    }
+
+            logger.info(f"Using DRDID function: {method_label}")
+
+            # Run DRDID estimation
+            drdid_args = {
+                "yname": outcome_col,
+                "tname": time_col,
+                "idname": unit_col,
+                "dname": treatment_col,
+                "xformla": xformla,
+                "data": r_data,
+                "boot": boot,
+                "nboot": nboot,
+                "inffunc": inffunc
+            }
+
+            drdid_result = drdid_func(**drdid_args)
+
+            logger.info("DRDID estimation completed, extracting results...")
+
+            # Extract results from DRDID output
+            # DRDID returns a list with components: ATT, se, uci, lci, boots, att.inf.func
+            att_estimate = float(drdid_result.rx2('ATT')[0])
+            att_se = float(drdid_result.rx2('se')[0])
+            ci_lower = float(drdid_result.rx2('lci')[0])
+            ci_upper = float(drdid_result.rx2('uci')[0])
+
+            # Calculate p-value
+            if att_se > 0 and not np.isnan(att_estimate) and not np.isnan(att_se):
+                z_stat = float(abs(att_estimate / att_se))
+                pval = float(2 * (1 - robjects.r['pnorm'](z_stat)[0]))
+            else:
+                pval = 1.0
+
+            overall_att = {
+                "estimate": att_estimate,
+                "se": att_se,
+                "ci_lower": ci_lower,
+                "ci_upper": ci_upper,
+                "pvalue": pval
+            }
+
+            result = {
+                "status": "success",
+                "method": f"Sant'Anna & Zhao (2020) - {method_label}",
+                "overall_att": overall_att,
+                "est_method": est_method,
+                "panel": panel,
+                "covariates_used": covariates if covariates else [],
+                "event_study": {
+                    0: {
+                        "estimate": att_estimate,
+                        "se": att_se,
+                        "ci_lower": ci_lower,
+                        "ci_upper": ci_upper,
+                        "pvalue": pval
+                    }
+                },
+                "n_periods": 1
+            }
+
+            # Extract influence functions if available
+            if inffunc:
+                try:
+                    inf_func = drdid_result.rx2('att.inf.func')
+                    if inf_func is not None and inf_func is not robjects.NULL:
+                        with localconverter(robjects.default_converter + pandas2ri.converter):
+                            inf_array = robjects.conversion.rpy2py(inf_func)
+                        result["influence_functions"] = {
+                            "n_obs": len(inf_array),
+                            "available": True
+                        }
+                except Exception as e:
+                    logger.warning(f"Could not extract influence functions: {e}")
+
+            logger.info(f"DRDID complete: ATT = {att_estimate:.4f} (SE = {att_se:.4f})")
+            return result
+
+        except Exception as e:
+            error_msg = str(e)
+            enriched_msg = self._enrich_error_message(error_msg, "DRDID")
+            logger.error(f"Error in DRDID estimation: {enriched_msg}")
+            return {
+                "status": "error",
+                "message": f"DRDID estimation failed: {enriched_msg}"
+            }
+
+    # =========================================================================
+    # etwfe estimator (Extended TWFE - Wooldridge 2021)
+    # =========================================================================
+
+    def etwfe_estimator(
+        self,
+        data: pd.DataFrame,
+        outcome_col: str,
+        unit_col: str,
+        time_col: str,
+        cohort_col: str,
+        treatment_col: Optional[str] = None,
+        covariates: Optional[List[str]] = None,
+        vcov: str = "by",
+        by_cohort: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Extended TWFE estimator (Wooldridge 2021, 2023).
+
+        Implements Wooldridge's extended TWFE approach that includes
+        cohort-time interactions to correctly handle heterogeneous treatment
+        effects in staggered DID designs. Uses the etwfe package which
+        relies on fixest for estimation.
+
+        Reference:
+            Wooldridge, J. M. (2021). "Two-Way Fixed Effects, the Two-Way
+            Mundlak Regression, and Difference-in-Differences Estimators."
+            SSRN Working Paper.
+
+        Args:
+            data: Panel data
+            outcome_col: Outcome variable name
+            unit_col: Unit identifier name
+            time_col: Time variable name
+            cohort_col: Cohort variable (first treatment time; 0 for never-treated)
+            treatment_col: Binary treatment indicator (optional, derived from cohort if absent)
+            covariates: List of covariate names (optional)
+            vcov: Variance-covariance type for clustering
+                - "by" (default): Cluster by cohort*period groups
+                - unit_col name: Cluster by unit
+                - "hetero": Heteroskedasticity-robust
+            by_cohort: If True, report effects by cohort (default: True)
+
+        Returns:
+            Dict with:
+            - status: "success" or "error"
+            - method: Method description
+            - overall_att: Average treatment effect on treated
+            - event_study: Treatment effects by event time
+            - cohort_effects: Effects by cohort (if by_cohort=True)
+        """
+        if not R_AVAILABLE or 'etwfe' not in self.r_packages:
+            return {
+                "status": "error",
+                "message": (
+                    "etwfe R package not available. "
+                    "Install with: install.packages('etwfe')\n"
+                    "Also requires fixest: install.packages('fixest')"
+                )
+            }
+
+        if 'fixest' not in self.r_packages:
+            return {
+                "status": "error",
+                "message": (
+                    "fixest R package not available (required dependency for etwfe). "
+                    "Install with: install.packages('fixest')"
+                )
+            }
+
+        try:
+            logger.info(f"Running Extended TWFE estimator (Wooldridge 2021)")
+
+            # Validate cohort variable
+            if cohort_col not in data.columns:
+                return {
+                    "status": "error",
+                    "message": (
+                        f"Cohort column '{cohort_col}' not found in data.\n"
+                        "etwfe requires a cohort variable indicating first treatment time.\n"
+                        "Never-treated units should be coded as 0."
+                    )
+                }
+
+            # Convert to R dataframe
+            with localconverter(robjects.default_converter + pandas2ri.converter):
+                r_data = robjects.conversion.py2rpy(data)
+
+            etwfe_pkg = self.r_packages['etwfe']
+            fixest_pkg = self.r_packages['fixest']
+
+            # Build etwfe arguments
+            # etwfe(fml, tvar, gvar, data, ...)
+            # fml: outcome formula (e.g., outcome ~ 1 or outcome ~ covariate)
+            if covariates and len(covariates) > 0:
+                fml_str = f"{outcome_col} ~ {' + '.join(covariates)}"
+            else:
+                fml_str = f"{outcome_col} ~ 1"
+
+            logger.info(f"etwfe formula: {fml_str}")
+            logger.info(f"Time variable: {time_col}, Cohort variable: {cohort_col}")
+
+            # Build vcov argument
+            if vcov == "by":
+                # Default: cluster by cohort*period
+                r_vcov = robjects.r('~.by')
+            elif vcov == "hetero":
+                r_vcov = "hetero"
+            else:
+                r_vcov = robjects.Formula(f"~ {vcov}")
+
+            # Step 1: Fit etwfe model
+            logger.info("Fitting etwfe model...")
+            etwfe_result = etwfe_pkg.etwfe(
+                fml=robjects.Formula(fml_str),
+                tvar=time_col,
+                gvar=cohort_col,
+                data=r_data,
+                vcov=r_vcov
+            )
+
+            logger.info("etwfe model fitted, extracting marginal effects with emfx()...")
+
+            # Step 2: Extract marginal effects (ATT) using emfx()
+            # emfx() computes average marginal effects from the etwfe model
+            emfx_result = etwfe_pkg.emfx(etwfe_result, type="event")
+
+            # Convert emfx result to pandas DataFrame
+            # emfx returns a slopes object from marginaleffects
+            # Use summary() to get a nice table
+            logger.info("Converting emfx results...")
+
+            # Extract using R summary
+            emfx_summary = robjects.r['summary'](emfx_result)
+
+            with localconverter(robjects.default_converter + pandas2ri.converter):
+                emfx_df = robjects.conversion.rpy2py(emfx_summary)
+
+            logger.info(f"emfx result shape: {emfx_df.shape}")
+            if hasattr(emfx_df, 'columns'):
+                logger.info(f"emfx columns: {emfx_df.columns.tolist()}")
+
+            # Extract event study estimates
+            event_study = {}
+            overall_estimates = []
+            overall_weights = []
+
+            for idx, row in emfx_df.iterrows():
+                # emfx returns columns: event, estimate, std.error, statistic, p.value, conf.low, conf.high
+                # or: term, event, estimate, std.error, ...
+                # The column names may vary by marginaleffects version
+                try:
+                    # Try different column name patterns
+                    if 'event' in emfx_df.columns:
+                        event_time = int(row['event'])
+                    elif 'term' in emfx_df.columns:
+                        event_time = int(row['term'])
+                    else:
+                        event_time = idx
+
+                    estimate = float(row.get('estimate', row.get('Estimate', 0)))
+                    se = float(row.get('std.error', row.get('Std. Error', row.get('std_error', 0))))
+
+                    # Get confidence intervals
+                    ci_low = row.get('conf.low', row.get('conf_low', None))
+                    ci_high = row.get('conf.high', row.get('conf_high', None))
+
+                    if ci_low is not None and ci_high is not None:
+                        ci_lower = float(ci_low)
+                        ci_upper = float(ci_high)
+                    else:
+                        ci_lower = estimate - 1.96 * se
+                        ci_upper = estimate + 1.96 * se
+
+                    # Get p-value
+                    pval_val = row.get('p.value', row.get('p_value', row.get('Pr(>|z|)', None)))
+                    if pval_val is not None:
+                        pval = float(pval_val)
+                    elif se > 0:
+                        z_stat = float(abs(estimate / se))
+                        pval = float(2 * (1 - robjects.r['pnorm'](z_stat)[0]))
+                    else:
+                        pval = 1.0
+
+                    event_study[event_time] = {
+                        "estimate": estimate,
+                        "se": se,
+                        "ci_lower": ci_lower,
+                        "ci_upper": ci_upper,
+                        "pvalue": pval
+                    }
+
+                    # Collect post-treatment for overall ATT
+                    if event_time >= 0:
+                        overall_estimates.append(estimate)
+
+                except (ValueError, KeyError, TypeError) as e:
+                    logger.warning(f"Could not parse emfx row {idx}: {e}")
+                    continue
+
+            # Calculate overall ATT
+            # Try to get it from emfx with type="simple" first
+            try:
+                emfx_simple = etwfe_pkg.emfx(etwfe_result, type="simple")
+                emfx_simple_summary = robjects.r['summary'](emfx_simple)
+                with localconverter(robjects.default_converter + pandas2ri.converter):
+                    emfx_simple_df = robjects.conversion.rpy2py(emfx_simple_summary)
+
+                overall_att_est = float(emfx_simple_df.iloc[0].get('estimate', emfx_simple_df.iloc[0].get('Estimate', 0)))
+                overall_att_se = float(emfx_simple_df.iloc[0].get('std.error', emfx_simple_df.iloc[0].get('Std. Error', emfx_simple_df.iloc[0].get('std_error', 0))))
+
+                ci_low_val = emfx_simple_df.iloc[0].get('conf.low', emfx_simple_df.iloc[0].get('conf_low', None))
+                ci_high_val = emfx_simple_df.iloc[0].get('conf.high', emfx_simple_df.iloc[0].get('conf_high', None))
+
+                if ci_low_val is not None and ci_high_val is not None:
+                    overall_ci_lower = float(ci_low_val)
+                    overall_ci_upper = float(ci_high_val)
+                else:
+                    overall_ci_lower = overall_att_est - 1.96 * overall_att_se
+                    overall_ci_upper = overall_att_est + 1.96 * overall_att_se
+
+                pval_val = emfx_simple_df.iloc[0].get('p.value', emfx_simple_df.iloc[0].get('p_value', None))
+                if pval_val is not None:
+                    overall_pval = float(pval_val)
+                elif overall_att_se > 0:
+                    z_stat = float(abs(overall_att_est / overall_att_se))
+                    overall_pval = float(2 * (1 - robjects.r['pnorm'](z_stat)[0]))
+                else:
+                    overall_pval = 1.0
+
+                logger.info(f"etwfe overall ATT from emfx(type='simple'): {overall_att_est:.4f}")
+
+            except Exception as e:
+                logger.warning(f"Could not get emfx(type='simple'), using average of post-treatment: {e}")
+                if overall_estimates:
+                    overall_att_est = float(np.mean(overall_estimates))
+                    # Use average SE as approximation
+                    post_ses = [event_study[t]["se"] for t in event_study if t >= 0]
+                    overall_att_se = float(np.mean(post_ses)) if post_ses else 0.0
+                else:
+                    overall_att_est = 0.0
+                    overall_att_se = 0.0
+
+                overall_ci_lower = overall_att_est - 1.96 * overall_att_se
+                overall_ci_upper = overall_att_est + 1.96 * overall_att_se
+
+                if overall_att_se > 0:
+                    z_stat = float(abs(overall_att_est / overall_att_se))
+                    overall_pval = float(2 * (1 - robjects.r['pnorm'](z_stat)[0]))
+                else:
+                    overall_pval = 1.0
+
+            overall_att = {
+                "estimate": overall_att_est,
+                "se": overall_att_se,
+                "ci_lower": overall_ci_lower,
+                "ci_upper": overall_ci_upper,
+                "pvalue": overall_pval
+            }
+
+            result = {
+                "status": "success",
+                "method": "Extended TWFE (Wooldridge 2021)",
+                "overall_att": overall_att,
+                "event_study": event_study,
+                "n_periods": len(event_study),
+                "covariates_used": covariates if covariates else [],
+                "vcov_type": vcov
+            }
+
+            # Optionally extract cohort-specific effects
+            if by_cohort:
+                try:
+                    emfx_cohort = etwfe_pkg.emfx(etwfe_result, type="group")
+                    emfx_cohort_summary = robjects.r['summary'](emfx_cohort)
+                    with localconverter(robjects.default_converter + pandas2ri.converter):
+                        cohort_df = robjects.conversion.rpy2py(emfx_cohort_summary)
+
+                    cohort_effects = {}
+                    for idx, row in cohort_df.iterrows():
+                        try:
+                            cohort_val = row.get('event', row.get('term', row.get('.by', idx)))
+                            cohort_effects[str(cohort_val)] = {
+                                "estimate": float(row.get('estimate', row.get('Estimate', 0))),
+                                "se": float(row.get('std.error', row.get('Std. Error', row.get('std_error', 0))))
+                            }
+                        except (ValueError, KeyError):
+                            continue
+
+                    result["cohort_effects"] = cohort_effects
+                except Exception as e:
+                    logger.warning(f"Could not extract cohort-specific effects: {e}")
+
+            logger.info(f"etwfe complete: ATT = {overall_att_est:.4f} (SE = {overall_att_se:.4f})")
+            return result
+
+        except Exception as e:
+            error_msg = str(e)
+            enriched_msg = self._enrich_error_message(error_msg, "etwfe")
+            logger.error(f"Error in etwfe estimation: {enriched_msg}")
+            return {
+                "status": "error",
+                "message": f"etwfe estimation failed: {enriched_msg}"
+            }
+
+    # =========================================================================
+    # panelView visualization
+    # =========================================================================
+
+    def create_panel_view(
+        self,
+        data: pd.DataFrame,
+        outcome_col: str,
+        treatment_col: str,
+        unit_col: str,
+        time_col: str,
+        output_path: Optional[str] = None,
+        view_type: str = "treat",
+        by_timing: bool = True,
+        legend_off: bool = False,
+        color: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """
+        Create treatment status visualization using the R panelView package.
+
+        panelView creates a heatmap showing treatment timing across units,
+        which is essential for understanding the structure of staggered
+        DID designs.
+
+        Reference:
+            Mou, H., Liu, L. & Xu, Y. (2023). "Panel Data Visualization in R
+            (panelView) and Stata (panelview)." Journal of Statistical Software.
+
+        Args:
+            data: Panel data
+            outcome_col: Outcome variable name
+            treatment_col: Treatment variable name
+            unit_col: Unit identifier name
+            time_col: Time variable name
+            output_path: Path to save the plot (PNG). If None, saves to temp file.
+            view_type: Type of visualization:
+                - "treat" (default): Treatment status heatmap
+                - "outcome": Outcome trajectories
+                - "bivariate": Combined treatment and outcome view
+            by_timing: Sort units by treatment timing (default: True)
+            legend_off: Turn off legend (default: False)
+            color: Custom colors as list of hex codes (optional)
+
+        Returns:
+            Dict with:
+            - status: "success" or "error"
+            - plot_path: Path to saved plot
+            - summary: Description of the visualization
+            - n_units: Number of units
+            - n_periods: Number of time periods
+            - treatment_groups: Summary of treatment timing groups
+        """
+        if not R_AVAILABLE or 'panelView' not in self.r_packages:
+            return {
+                "status": "error",
+                "message": (
+                    "panelView R package not available. "
+                    "Install with: install.packages('panelView')"
+                )
+            }
+
+        try:
+            logger.info(f"Creating panelView visualization (type={view_type})")
+
+            # Determine output path
+            if output_path is None:
+                import tempfile
+                output_path = tempfile.mktemp(suffix=".png", prefix="panelview_")
+
+            # Convert to R dataframe
+            with localconverter(robjects.default_converter + pandas2ri.converter):
+                r_data = robjects.conversion.py2rpy(data)
+
+            panelview_pkg = self.r_packages['panelView']
+            panelview_fn = panelview_pkg.panelview
+
+            # Build formula
+            formula_str = f"{outcome_col} ~ {treatment_col}"
+
+            # Open PNG device
+            r(f'png("{output_path}", width=800, height=600, res=100)')
+
+            try:
+                # Build panelView arguments
+                pv_args = {
+                    "formula": robjects.Formula(formula_str),
+                    "data": r_data,
+                    "index": robjects.StrVector([unit_col, time_col]),
+                    "by_timing": by_timing,
+                    "legend_off": legend_off
+                }
+
+                # Set type parameter
+                if view_type == "outcome":
+                    pv_args["type"] = "outcome"
+                elif view_type == "bivariate":
+                    pv_args["type"] = "bivariate"
+                # Default "treat" does not need type argument (it's the default)
+
+                # Add custom colors if specified
+                if color:
+                    pv_args["color"] = robjects.StrVector(color)
+
+                # Create the visualization
+                panelview_fn(**pv_args)
+
+            finally:
+                # Close device
+                r('dev.off()')
+
+            # Collect summary statistics
+            n_units = data[unit_col].nunique()
+            n_periods = data[time_col].nunique()
+
+            # Summarize treatment groups
+            treatment_groups = {}
+            if treatment_col in data.columns:
+                # Find first treatment time for each unit
+                treated_units = data[data[treatment_col] == 1]
+                if not treated_units.empty:
+                    first_treat = treated_units.groupby(unit_col)[time_col].min()
+                    for timing, count in first_treat.value_counts().items():
+                        treatment_groups[str(timing)] = int(count)
+
+                    # Count never-treated
+                    all_units = set(data[unit_col].unique())
+                    treated_unit_set = set(treated_units[unit_col].unique())
+                    n_never_treated = len(all_units - treated_unit_set)
+                    if n_never_treated > 0:
+                        treatment_groups["never_treated"] = n_never_treated
+
+            result = {
+                "status": "success",
+                "plot_path": output_path,
+                "view_type": view_type,
+                "summary": f"panelView {view_type} plot saved to {output_path}",
+                "n_units": n_units,
+                "n_periods": n_periods,
+                "treatment_groups": treatment_groups
+            }
+
+            logger.info(f"panelView complete: {n_units} units, {n_periods} periods, saved to {output_path}")
+            return result
+
+        except Exception as e:
+            error_msg = str(e)
+            enriched_msg = self._enrich_error_message(error_msg, "panelView")
+            logger.error(f"Error in panelView: {enriched_msg}")
+            return {
+                "status": "error",
+                "message": f"panelView visualization failed: {enriched_msg}"
             }

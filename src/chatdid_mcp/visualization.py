@@ -6,7 +6,6 @@ Implements event study plots and diagnostic plots for DID analysis.
 from __future__ import annotations  # For forward type references
 
 import logging
-import sys
 import os
 from typing import Dict, Any, Optional, List, Tuple, Union, TYPE_CHECKING
 import pandas as pd
@@ -19,12 +18,6 @@ from pathlib import Path
 if TYPE_CHECKING:
     from mcp.types import ImageContent
 
-# Configure logging to stderr ONLY (must be before other imports use logger)
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stderr)]
-)
 logger = logging.getLogger(__name__)
 
 # Import FastMCP image types for Claude Desktop display
@@ -771,7 +764,7 @@ class DiDVisualizer:
 
         # Add warning text if negative weights are substantial
         if negative_weight_share > 0.05:
-            ax2.text(0.5, 0.8, '⚠️ Substantial negative\nweights detected!',
+            ax2.text(0.5, 0.8, ' Substantial negative\nweights detected!',
                     transform=ax2.transAxes, ha='center', va='center',
                     bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.8),
                     fontsize=12, fontweight='bold')
@@ -862,7 +855,7 @@ class DiDVisualizer:
         if negative_weight_share > 0.05:
             fig.add_annotation(
                 x=0.5, y=0.8,
-                text="⚠️ Substantial negative<br>weights detected!",
+                text=" Substantial negative<br>weights detected!",
                 showarrow=False,
                 bgcolor="yellow",
                 bordercolor="black",
@@ -1052,7 +1045,7 @@ class DiDVisualizer:
                 if forbidden_weight > 0.1:
                     html += f"""
                     <div class="warning">
-                        <h4>⚠️ TWFE Bias Warning</h4>
+                        <h4> TWFE Bias Warning</h4>
                         <p>High weight on forbidden comparisons: {forbidden_weight:.1%}</p>
                         <p>TWFE estimates may be biased. Consider using robust estimators.</p>
                     </div>
@@ -1060,7 +1053,7 @@ class DiDVisualizer:
                 else:
                     html += f"""
                     <div class="success">
-                        <h4>✅ TWFE Appears Unproblematic</h4>
+                        <h4>TWFE Appears Unproblematic</h4>
                         <p>Low weight on forbidden comparisons: {forbidden_weight:.1%}</p>
                     </div>
                     """
@@ -1073,7 +1066,7 @@ class DiDVisualizer:
                 if neg_weight_share > 0.05:
                     html += f"""
                     <div class="warning">
-                        <h4>⚠️ Negative Weights Warning</h4>
+                        <h4> Negative Weights Warning</h4>
                         <p>Substantial negative weights: {neg_weight_share:.1%}</p>
                         <p>Consider using heterogeneity-robust estimators.</p>
                     </div>

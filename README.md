@@ -18,7 +18,7 @@ A Model Context Protocol (MCP) server for interactive Difference-in-Differences 
 
 2. **uv package manager** - Required for dependency management:
 
-   **⚠️ CRITICAL for Claude Desktop users on macOS:**
+   **CRITICAL for Claude Desktop users on macOS:**
 
    You **MUST** install uv via Homebrew (not curl) to ensure Claude Desktop can find it:
 
@@ -68,7 +68,7 @@ pip install fastmcp  # Install fastmcp first
 fastmcp install claude-desktop src/chatdid_mcp/server.py --name "ChatDiD" --project $(pwd)
 ```
 
-Then restart Claude Desktop completely (quit and reopen). Look for the hammer icon (🔨) to confirm the server is loaded.
+Then restart Claude Desktop completely (quit and reopen). Look for the tools indicator to confirm the server is loaded.
 
 **If you see "Server disconnected" error**, see the [Troubleshooting](#troubleshooting-installation) section below.
 
@@ -250,11 +250,11 @@ realpath data/examples/mpdta.csv  # Shows full path
 
 **In Claude Desktop:**
 ```
-❌ Wrong: "Load data/examples/mpdta.csv"
-❌ Wrong: "Load ~/ChatDiD/data/examples/mpdta.csv"  # ~ doesn't expand
-❌ Wrong: Dragging/attaching file to chat
+Wrong: "Load data/examples/mpdta.csv"
+Wrong: "Load ~/ChatDiD/data/examples/mpdta.csv"  # ~ doesn't expand
+Wrong: Dragging/attaching file to chat
 
-✅ Correct: "Load /Users/yourname/projects/ChatDiD/data/examples/mpdta.csv"
+Correct: "Load /Users/yourname/projects/ChatDiD/data/examples/mpdta.csv"
 ```
 
 ### Verifying Installation
@@ -276,14 +276,14 @@ Load the mpdta dataset from /absolute/path/to/ChatDiD/data/examples/mpdta.csv
 
 Once connected to Claude Desktop (or other MCP clients), you can start a DID analysis through natural conversation.
 
-### ⚠️ Important: File Paths
+### Important: File Paths
 
 **You MUST use absolute file paths when loading data:**
 
 ```
-✅ Correct:   load_data("/Users/username/projects/ChatDiD/data/examples/mpdta.csv")
-❌ Wrong:     load_data("data/examples/mpdta.csv")  # Relative paths don't work
-❌ Wrong:     Attaching files directly to chat      # File attachments are not supported
+Correct:   load_data("/Users/username/projects/ChatDiD/data/examples/mpdta.csv")
+Wrong:     load_data("data/examples/mpdta.csv")  # Relative paths don't work
+Wrong:     Attaching files directly to chat      # File attachments are not supported
 ```
 
 **Why?** MCP servers run in a different working directory than your current terminal. Always provide the full absolute path to your data files.
@@ -307,7 +307,7 @@ Claude: I'll help you conduct a robust DID analysis! Let me start by loading the
 
 [Uses load_data tool with absolute path]
 
-✅ Data Loading Successful
+Data Loading Successful
 - 2,500 observations × 6 columns
 - Columns: year, countyreal, lpop, lemp, first.treat, treat
 
@@ -315,7 +315,7 @@ Let me explore the panel structure to understand your data better.
 
 [Uses explore_data tool]
 
-📊 Panel Structure:
+Panel Structure:
 - Unit variable: countyreal
 - Time variable: year
 - Treatment: 38.2% treated
@@ -325,7 +325,7 @@ Now let's check if standard TWFE would be problematic here.
 
 [Uses diagnose_twfe tool]
 
-⚠️ TWFE Diagnostic Results:
+TWFE Diagnostic Results:
 - Goodman-Bacon decomposition shows 13.7% problematic comparisons
 - TWFE estimate: -0.0365
 - Recommendation: Use heterogeneity-robust estimators
@@ -334,7 +334,7 @@ I'll use the Callaway & Sant'Anna estimator, which is robust to these issues.
 
 [Uses estimate_callaway_santanna]
 
-📈 Results:
+Results:
 - Overall ATT: -0.0305 (SE: 0.0129)
 - 95% CI: [-0.0558, -0.0051]
 - Statistically significant (p = 0.0184)
@@ -344,7 +344,7 @@ Let me create an event study plot to visualize the dynamics.
 
 [Uses create_event_study_plot]
 
-✅ Event study plot saved! The plot shows:
+Event study plot saved. The plot shows:
 - No pre-treatment trends (parallel trends assumption holds)
 - Treatment effects emerge after period 0
 - Effects grow stronger over time
@@ -355,7 +355,7 @@ Claude: Absolutely! I'll export both the estimates and comparison with other met
 
 [Uses export_results and export_comparison]
 
-✅ Results exported to CSV, Excel, and LaTeX formats!
+Results exported to CSV, Excel, and LaTeX formats!
 ```
 
 This interactive workflow demonstrates how ChatDiD guides you through:
@@ -410,7 +410,8 @@ ChatDiD/
 │   ├── __init__.py
 │   ├── server.py          # Main MCP server
 │   ├── did_analyzer.py    # Core DID analysis engine
-│   └── tools/             # Individual MCP tools
+│   ├── workflow.py        # 5-step DID workflow logic
+│   └── r_estimators.py    # R-backed estimator implementations
 ├── requirements.txt
 ├── pyproject.toml
 └── README.md

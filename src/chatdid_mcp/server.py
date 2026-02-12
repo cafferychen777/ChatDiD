@@ -13,38 +13,25 @@ import numpy as np
 
 from fastmcp import FastMCP
 
-# Handle imports for both module and script execution
-import sys
-import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from .did_analyzer import DiDAnalyzer
+from .storage_manager import StorageManager
+from .models import SensitivityAnalysisParams
 
-try:
-    from .did_analyzer import DiDAnalyzer
-    from .storage_manager import StorageManager
-    from .models import SensitivityAnalysisParams
-except ImportError:
-    # Fallback for when running as script
-    from chatdid_mcp.did_analyzer import DiDAnalyzer
-    from chatdid_mcp.storage_manager import StorageManager
-    from chatdid_mcp.models import SensitivityAnalysisParams
-
-# Configure logging - CRITICAL: Use stderr only for STDIO transport
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stderr)]  # NEVER use stdout in STDIO transport
-)
 logger = logging.getLogger(__name__)
 
 # Initialize FastMCP server
 mcp = FastMCP(
     name="chatdid-mcp-server",
-    instructions="Interactive Difference-in-Differences analysis through chat"
+    instructions="Interactive Difference-in-Differences analysis through chat",
 )
 
-# Global instances (lazy initialization)
+# Global instances (lazy initialization).
+# MCP STDIO transport = one process per client session.
+# Within a session, load_data() resets all analysis state (diagnostics,
+# results, config, workflow) to prevent cross-dataset contamination.
 analyzer = None
 storage_manager = None
+
 
 def get_analyzer():
     """Get or create the global analyzer instance."""
@@ -53,8 +40,11 @@ def get_analyzer():
         analyzer = DiDAnalyzer()
         logger.info("DiD analyzer initialized (NEW INSTANCE)")
     else:
-        logger.info(f"DiD analyzer reused (existing instance with {len(analyzer.diagnostics)} diagnostics)")
+        logger.info(
+            f"DiD analyzer reused (existing instance with {len(analyzer.diagnostics)} diagnostics)"
+        )
     return analyzer
+
 
 def get_storage():
     """Get or create the global storage manager instance."""
@@ -66,19 +56,13 @@ def get_storage():
 
 
 def _preprocess_did_columns(
-    idname: str,
-    tname: str,
-    gname: str,
-    analyzer: Optional[DiDAnalyzer] = None
+    idname: str, tname: str, gname: str, analyzer: Optional[DiDAnalyzer] = None
 ) -> Dict[str, str]:
     """
-    Universal preprocessing helper for DID estimation methods.
+    Thin wrapper that delegates to DiDAnalyzer.prepare_data_for_estimation().
 
-    Auto-detects and converts:
-    - String unit IDs → numeric unit_id_numeric
-    - Binary treatment (0/1) → cohort_auto
-
-    This is the same logic used in workflow(), ensuring consistency.
+    Maps DID estimation parameter names (idname/tname/gname) to the canonical
+    preprocessing method, which auto-detects binary treatment vs cohort variables.
 
     Args:
         idname: Unit identifier column name
@@ -92,70 +76,33 @@ def _preprocess_did_columns(
         - gname: Actual cohort column (may be converted)
 
     Example:
-        >>> # Before: country (string), dem (binary)
         >>> cols = _preprocess_did_columns("country", "year", "dem")
-        >>> # After: {"idname": "unit_id_numeric", "gname": "cohort_auto"}
+        >>> # {"idname": "unit_id_numeric", "gname": "cohort_auto"}
     """
     if analyzer is None:
         analyzer = get_analyzer()
 
-    data = analyzer.data
-
-    # Detect if gname is binary treatment (needs cohort creation) or already a cohort
-    is_binary_treatment = False
-    if gname in data.columns:
-        unique_vals = data[gname].dropna().unique()
-        # If only 0/1 or True/False, it's binary treatment
-        if len(unique_vals) <= 2 and set(unique_vals).issubset({0, 1, True, False}):
-            is_binary_treatment = True
-
     try:
-        if is_binary_treatment:
-            # gname is binary treatment, need to create cohort
-            processed = analyzer.prepare_data_for_estimation(
-                unit_col=idname,
-                time_col=tname,
-                treatment_col=gname,  # Use gname as treatment
-                cohort_col=None  # Will auto-create cohort_auto
-            )
-            actual_idname = processed['unit_col']
-            actual_gname = processed['cohort_col']
-        else:
-            # gname is already a cohort, just handle unit_col conversion if needed
-            if idname in data.columns and data[idname].dtype == 'object':
-                # Need to convert string unit IDs
-                if 'unit_id_numeric' not in data.columns:
-                    unit_id_map = {name: idx for idx, name in enumerate(data[idname].unique())}
-                    analyzer.data['unit_id_numeric'] = analyzer.data[idname].map(unit_id_map)
-                    analyzer.config['unit_col'] = 'unit_id_numeric'
-                    analyzer.config['unit_col_original'] = idname
-                    logger.info(f"Auto-created numeric unit ID 'unit_id_numeric' from string '{idname}'")
-                actual_idname = 'unit_id_numeric'
-            else:
-                actual_idname = idname
-            actual_gname = gname
-
+        processed = analyzer.prepare_data_for_estimation(
+            unit_col=idname, time_col=tname, treatment_col=gname
+        )
+        return {"idname": processed["unit_col"], "gname": processed["cohort_col"]}
     except Exception as e:
         logger.warning(f"Auto-preprocessing failed: {e}. Using original column names.")
-        actual_idname = idname
-        actual_gname = gname
-
-    return {
-        'idname': actual_idname,
-        'gname': actual_gname
-    }
+        return {"idname": idname, "gname": gname}
 
 
 # =============================================================================
 # TOOLS - Using FastMCP decorators
 # =============================================================================
 
+
 @mcp.tool()
 async def load_data(
     file_path: str,
     file_type: str = "auto",
     sheet_name: Optional[str] = None,
-    encoding: str = "utf-8"
+    encoding: str = "utf-8",
 ) -> str:
     """
     Load dataset for DID analysis from various file formats.
@@ -181,100 +128,105 @@ async def load_data(
         if result["status"] == "success":
             info = result["info"]
             return f"""
-# Data Loading Successful ✅
+# Data Loading Successful
 
-**Dataset Overview:**
-- **Shape:** {info['shape'][0]:,} rows × {info['shape'][1]} columns
-- **Columns:** {', '.join(info['columns'][:10])}{'...' if len(info['columns']) > 10 else ''}
+Dataset Overview:
+- Shape: {info["shape"][0]:,} rows × {info["shape"][1]} columns
+- Columns: {", ".join(info["columns"][:10])}{"..." if len(info["columns"]) > 10 else ""}
 
-**Next Steps:**
-1. Use `explore_data` to analyze panel structure
+Next Steps:
+1. Use explore_data to analyze panel structure
 2. Identify unit, time, outcome, and treatment variables
 3. Check for staggered treatment adoption patterns
 
 The data is now loaded and ready for DID analysis!
 """
         else:
-            return f"❌ **Error loading data:** {result['message']}"
+            return f"Error loading data: {result['message']}"
 
     except FileNotFoundError as e:
         logger.error(f"File not found in load_data: {e}")
         return f"""
-❌ **Error: File not found**
+Error: File not found
 
-The specified file does not exist: `{file_path}`
+The specified file does not exist: {file_path}
 
-**Common Causes:**
+Common Causes:
 
-1. **Using relative paths** ❌
+1. Using relative paths [Not supported]
    - MCP servers run in a different directory
-   - Relative paths like `data/file.csv` will not work
+   - Relative paths like data/file.csv will not work
 
-2. **Using tilde (~) in paths** ❌
+2. Using tilde (~) in paths [Not supported]
    - Tilde expansion may not work in MCP context
-   - `~/ChatDiD/data.csv` will fail
+   - ~/ChatDiD/data.csv will fail
 
-3. **Attaching files to chat** ❌
+3. Attaching files to chat [Not supported]
    - File attachments are not supported by MCP servers
    - Files must exist on your filesystem
 
-**Solution: Use absolute paths** ✅
+Solution: Use absolute paths
 
 Get the absolute path of your file:
 
-```bash
+
 # Method 1: Use realpath
 realpath data/examples/mpdta.csv
 
 # Method 2: Use pwd + filename
 echo "$(pwd)/data/examples/mpdta.csv"
-```
+
 
 Then use the full path in your request:
-```
-Load /Users/yourname/projects/ChatDiD/data/examples/mpdta.csv
-```
 
-📖 See README.md "Usage Example" section for more details about file paths.
+Load /Users/yourname/projects/ChatDiD/data/examples/mpdta.csv
+
+
+See README.md "Usage Example" section for more details about file paths.
 """
 
     except Exception as e:
         logger.error(f"Error in load_data: {e}")
         # Check if error message indicates file/path issues
         error_msg = str(e).lower()
-        if any(keyword in error_msg for keyword in ['no such file', 'file not found', 'does not exist', 'cannot find']):
+        if any(
+            keyword in error_msg
+            for keyword in [
+                "no such file",
+                "file not found",
+                "does not exist",
+                "cannot find",
+            ]
+        ):
             return f"""
-❌ **Error: Cannot access file**
+Error: Cannot access file
 
 {str(e)}
 
-**This looks like a file path issue.**
+This looks like a file path issue.
 
-**Solution: Use absolute paths** ✅
+Solution: Use absolute paths
 
 MCP servers require absolute file paths. Get the absolute path:
 
-```bash
+
 # Method 1: Use realpath
 realpath your_file.csv
 
 # Method 2: Use pwd
 echo "$(pwd)/your_file.csv"
-```
 
-Then use the full path like: `/Users/yourname/projects/ChatDiD/data/file.csv`
 
-📖 See README.md "Usage Example" section for details about file paths.
+Then use the full path like: /Users/yourname/projects/ChatDiD/data/file.csv
+
+See README.md "Usage Example" section for details about file paths.
 """
         else:
-            return f"❌ **Error:** {str(e)}"
+            return f"Error: {str(e)}"
 
 
 @mcp.tool()
-async def explore_data(
-    show_sample: bool = True,
-    analyze_balance: bool = True
-) -> str:
+async def explore_data(show_sample: bool = True, analyze_balance: bool = True) -> str:
     """
     Explore loaded dataset to understand panel structure and identify DID variables.
 
@@ -289,81 +241,77 @@ async def explore_data(
         result = await get_analyzer().explore_data()
 
         if result["status"] == "error":
-            return f"❌ **Error:** {result['message']}"
+            return f"Error: {result['message']}"
 
         exploration = result["exploration"]
 
         # Build exploration report
-        response = "# Data Exploration Report 📊\n\n"
+        response = "# Data Exploration Report\n\n"
 
         # Panel structure analysis
         panel = exploration["panel_structure"]
-        response += "## Panel Structure Analysis\n\n"
-        response += f"**Potential Unit Variables:** {', '.join(panel['potential_unit_vars']) if panel['potential_unit_vars'] else 'None detected'}\n\n"
-        response += f"**Potential Time Variables:** {', '.join(panel['potential_time_vars']) if panel['potential_time_vars'] else 'None detected'}\n\n"
-        response += f"**Total Observations:** {panel['n_observations']:,}\n\n"
+        response += "Panel Structure Analysis\n\n"
+        response += f"Potential Unit Variables: {', '.join(panel['potential_unit_vars']) if panel['potential_unit_vars'] else 'None detected'}\n\n"
+        response += f"Potential Time Variables: {', '.join(panel['potential_time_vars']) if panel['potential_time_vars'] else 'None detected'}\n\n"
+        response += f"Total Observations: {panel['n_observations']:,}\n\n"
 
         # Treatment patterns
         treatment = exploration["treatment_patterns"]
-        response += "## Treatment Variable Analysis\n\n"
+        response += "Treatment Variable Analysis\n\n"
         if treatment["potential_treatment_vars"]:
-            response += "**Potential Treatment Variables:**\n"
+            response += "Potential Treatment Variables:\n"
             for treat in treatment["potential_treatment_vars"]:
-                response += f"- `{treat['column']}`: {treat['treatment_share']:.1%} treated\n"
+                response += (
+                    f"- {treat['column']}: {treat['treatment_share']:.1%} treated\n"
+                )
         else:
             response += "No clear binary treatment variables detected.\n"
 
-        response += "\n## Recommendations\n\n"
+        response += "\nRecommendations\n\n"
         for rec in exploration["recommendations"]:
             response += f"{rec}\n"
 
-        response += "\n**Next Step:** Use `diagnose_twfe` after setting up your variables to check for potential bias."
+        response += "\nNext Step: Use diagnose_twfe after setting up your variables to check for potential bias."
 
         return response
 
     except Exception as e:
         logger.error(f"Error in explore_data: {e}")
-        return f"❌ **Error:** {str(e)}"
+        return f"Error: {str(e)}"
 
 
 # =============================================================================
 # RESOURCES - Analysis guides and results
 # =============================================================================
 
+
 @mcp.resource("chatdid://guide/analysis-workflow")
 async def get_analysis_workflow() -> str:
     """DID Analysis Workflow Guide"""
     return """
 # DID Analysis Workflow Guide
-
-## Step-by-Step Process
-
-### 1. Data Preparation
+ Step-by-Step Process
+ 1. Data Preparation
 - Load your panel dataset
 - Identify unit, time, outcome, and treatment variables
 - Check for missing values and data quality issues
-
-### 2. Exploratory Analysis
+ 2. Exploratory Analysis
 - Examine treatment timing patterns
 - Check for staggered adoption
 - Visualize pre-treatment trends
-
-### 3. TWFE Diagnostics
+ 3. TWFE Diagnostics
 - Run Goodman-Bacon decomposition
 - Check for negative weighting
 - Assess forbidden comparisons
-
-### 4. Robust Estimation
+ 4. Robust Estimation
 - Choose appropriate estimator based on diagnostics
 - Estimate treatment effects
 - Generate event study plots
-
-### 5. Sensitivity Analysis
+ 5. Sensitivity Analysis
 - Test parallel trends assumption
 - Conduct robustness checks
 - Validate findings
-
-### 6. Interpretation
+ 6. Interpretation
 - Assess statistical and economic significance
 - Consider policy implications
 - Document limitations
@@ -392,6 +340,7 @@ async def get_analysis_workflow() -> str:
 # PROMPTS - Interactive templates
 # =============================================================================
 
+
 @mcp.prompt()
 def did_analysis_start(research_question: str) -> str:
     """Start a new DID analysis session"""
@@ -400,11 +349,11 @@ def did_analysis_start(research_question: str) -> str:
 
 I'll help you conduct a robust Difference-in-Differences analysis. Let's start by:
 
-1. **Loading your data**: Use the `load_data` tool to import your dataset
-2. **Exploring the data**: Use `explore_data` to understand your panel structure
-3. **Diagnosing TWFE issues**: Use `diagnose_twfe` to check for bias
-4. **Choosing robust estimators**: Based on diagnostics, select appropriate methods
-5. **Sensitivity analysis**: Validate your results with robustness checks
+1. Loading your data: Use the load_data tool to import your dataset
+2. Exploring the data: Use explore_data to understand your panel structure
+3. Diagnosing TWFE issues: Use diagnose_twfe to check for bias
+4. Choosing robust estimators: Based on diagnostics, select appropriate methods
+5. Sensitivity analysis: Validate your results with robustness checks
 
 What type of data do you have, and what treatment are you studying?
 """
@@ -414,6 +363,7 @@ What type of data do you have, and what treatment are you studying?
 # 5-STEP WORKFLOW TOOLS
 # =============================================================================
 
+
 @mcp.tool()
 async def workflow(
     unit_col: str,
@@ -422,7 +372,7 @@ async def workflow(
     treatment_col: str,
     cohort_col: Optional[str] = None,
     method: str = "auto",
-    cluster_level: Optional[str] = None
+    cluster_level: Optional[str] = None,
 ) -> str:
     """
     Execute the complete 5-step DID workflow automatically.
@@ -441,7 +391,8 @@ async def workflow(
         treatment_col: Column name for treatment indicator
         cohort_col: Column name for treatment cohort (optional)
         method: Estimation method ("auto", "callaway_santanna", "sun_abraham",
-                "imputation_bjs", "gardner", "dcdh", "gsynth", "synthdid")
+                "imputation_bjs", "gardner", "dcdh", "gsynth", "synthdid",
+                "drdid", "etwfe")
                 Note: "efficient" is DISABLED due to systematic issues.
         cluster_level: Variable for clustering standard errors
 
@@ -449,26 +400,27 @@ async def workflow(
         Complete DID analysis report
 
     Note:
-        **Results Storage:** Workflow results are stored with "workflow_" prefix.
+        Results Storage: Workflow results are stored with "workflow_" prefix.
         - Primary method results: "workflow_{method}" (e.g., "workflow_imputation_bjs")
         - Robustness check results: "workflow_{robustness_method}"
-        - Latest results: "latest" (always points to most recent)
+        - Primary for inference: "latest" (points to the primary estimator;
+          Steps 4-5 read this for parallel trends assessment and final inference)
 
-        **Export Results:** Use export_results(results_key="latest") or
+        Export Results: Use export_results(results_key="latest") or
         export_results(results_key="workflow_imputation_bjs") to access workflow results.
-
-        **⚠️ Note:** "efficient" estimator is DISABLED. See KNOWN_ISSUES.md for details.
     """
     try:
         # Update analyzer config
-        get_analyzer().config.update({
-            "unit_col": unit_col,
-            "time_col": time_col,
-            "outcome_col": outcome_col,
-            "treatment_col": treatment_col,
-            "cohort_col": cohort_col
-        })
-        
+        get_analyzer().config.update(
+            {
+                "unit_col": unit_col,
+                "time_col": time_col,
+                "outcome_col": outcome_col,
+                "treatment_col": treatment_col,
+                "cohort_col": cohort_col,
+            }
+        )
+
         # Run complete workflow
         results = await get_analyzer().workflow.run_complete_workflow(
             unit_col=unit_col,
@@ -477,17 +429,17 @@ async def workflow(
             treatment_col=treatment_col,
             cohort_col=cohort_col,
             method=method,
-            cluster_level=cluster_level
+            cluster_level=cluster_level,
         )
-        
+
         if results["status"] == "complete":
             return results["final_report"]
         else:
             return f"Workflow incomplete. Last successful step: {results.get('last_step', 'None')}"
-            
+
     except Exception as e:
         logger.error(f"Error in DID workflow: {e}")
-        return f"❌ **Error:** {str(e)}"
+        return f"Error: {str(e)}"
 
 
 @mcp.tool()
@@ -498,17 +450,17 @@ async def diagnose_twfe(
     treatment_col: str,
     cohort_col: Optional[str] = None,
     run_bacon_decomp: bool = True,
-    run_twfe_weights: bool = True
+    run_twfe_weights: bool = True,
 ) -> str:
     """
     Diagnose potential TWFE bias in staggered DID designs.
-    
+
     Performs comprehensive diagnostics including:
     - Goodman-Bacon decomposition to identify problematic comparisons
     - Negative weights analysis to detect bias
     - Treatment timing variation assessment
     - Recommendations for appropriate estimators
-    
+
     Args:
         unit_col: Column name for unit identifier
         time_col: Column name for time variable
@@ -517,44 +469,45 @@ async def diagnose_twfe(
         cohort_col: Column name for treatment cohort (optional)
         run_bacon_decomp: Whether to run Goodman-Bacon decomposition (default: True)
         run_twfe_weights: Whether to analyze TWFE weights (default: True)
-    
+
     Returns:
         Comprehensive TWFE diagnostic report with recommendations
-    
+
     Examples:
         >>> # Basic TWFE diagnostics
         >>> diagnose_twfe("county", "year", "employment", "treatment")
-        
-        >>> # With cohort specification  
+
+        >>> # With cohort specification
         >>> diagnose_twfe("county", "year", "employment", "treatment", "first_treat")
-        
+
         >>> # Only run Bacon decomposition
-        >>> diagnose_twfe("county", "year", "employment", "treatment", 
+        >>> diagnose_twfe("county", "year", "employment", "treatment",
         ...               run_twfe_weights=False)
     """
     try:
         analyzer = get_analyzer()
-        
+
         if analyzer.data is None:
-            return "❌ **Error:** No data loaded. Please load data first."
-        
+            return "Error: No data loaded. Please load data first."
+
         # Update analyzer configuration
-        analyzer.config.update({
-            "unit_col": unit_col,
-            "time_col": time_col,
-            "outcome_col": outcome_col,
-            "treatment_col": treatment_col,
-            "cohort_col": cohort_col
-        })
-        
+        analyzer.config.update(
+            {
+                "unit_col": unit_col,
+                "time_col": time_col,
+                "outcome_col": outcome_col,
+                "treatment_col": treatment_col,
+                "cohort_col": cohort_col,
+            }
+        )
+
         # Run diagnostics
         result = await analyzer.diagnose_twfe(
-            run_bacon_decomp=run_bacon_decomp,
-            run_twfe_weights=run_twfe_weights
+            run_bacon_decomp=run_bacon_decomp, run_twfe_weights=run_twfe_weights
         )
-        
+
         if result["status"] == "error":
-            return f"❌ **Error:** {result['message']}"
+            return f"Error: {result['message']}"
 
         diagnostics = result["diagnostics"]
 
@@ -563,105 +516,113 @@ async def diagnose_twfe(
             analyzer.diagnostics["bacon_decomp"] = diagnostics["bacon_decomp"]
         if "twfe_weights" in diagnostics:
             analyzer.diagnostics["twfe_weights"] = diagnostics["twfe_weights"]
-        logger.info(f"Stored TWFE diagnostic results. Current diagnostics keys: {list(analyzer.diagnostics.keys())}")
+        logger.info(
+            f"Stored TWFE diagnostic results. Current diagnostics keys: {list(analyzer.diagnostics.keys())}"
+        )
         logger.info(f"Analyzer instance ID: {id(analyzer)}")
 
         # Build diagnostic report
-        response = "# TWFE Diagnostic Report 🔍\n\n"
-        
+        response = "# TWFE Diagnostic Report\n\n"
+
         # Basic setup info
-        response += "## Analysis Setup\n\n"
-        response += f"- **Unit Variable:** `{unit_col}`\n"
-        response += f"- **Time Variable:** `{time_col}`\n"
-        response += f"- **Outcome Variable:** `{outcome_col}`\n"
-        response += f"- **Treatment Variable:** `{treatment_col}`\n"
+        response += "Analysis Setup\n\n"
+        response += f"- Unit Variable: {unit_col}\n"
+        response += f"- Time Variable: {time_col}\n"
+        response += f"- Outcome Variable: {outcome_col}\n"
+        response += f"- Treatment Variable: {treatment_col}\n"
         if cohort_col:
-            response += f"- **Cohort Variable:** `{cohort_col}`\n"
+            response += f"- Cohort Variable: {cohort_col}\n"
         response += "\n"
-        
+
         # Treatment timing analysis
         if "treatment_timing" in diagnostics:
             timing = diagnostics["treatment_timing"]
-            response += "## Treatment Timing Analysis\n\n"
-            response += f"- **Treatment Type:** {timing['type']}\n"
-            response += f"- **Number of Cohorts:** {timing.get('n_cohorts', 'N/A')}\n"
-            response += f"- **Staggered Adoption:** {'Yes' if timing['is_staggered'] else 'No'}\n\n"
-        
+            response += "Treatment Timing Analysis\n\n"
+            response += f"- Treatment Type: {timing['type']}\n"
+            response += f"- Number of Cohorts: {timing.get('n_cohorts', 'N/A')}\n"
+            response += f"- Staggered Adoption: {'Yes' if timing['is_staggered'] else 'No'}\n\n"
+
         # Goodman-Bacon decomposition results
         if "bacon_decomp" in diagnostics:
             bacon = diagnostics["bacon_decomp"]
-            response += "## Goodman-Bacon Decomposition\n\n"
-            response += f"**Overall TWFE Estimate:** {bacon.get('overall_estimate', 'N/A'):.4f}\n\n"
-            
+            response += "Goodman-Bacon Decomposition\n\n"
+            response += f"Overall TWFE Estimate: {bacon.get('overall_estimate', 'N/A'):.4f}\n\n"
+
             if "comparison_types" in bacon:
-                response += "**Comparison Breakdown:**\n"
+                response += "Comparison Breakdown:\n"
                 for comp_type, details in bacon["comparison_types"].items():
-                    response += f"- **{comp_type}:** {details['weight']:.1%} weight, estimate = {details['estimate']:.4f}\n"
+                    response += f"- {comp_type}: {details['weight']:.1%} weight, estimate = {details['estimate']:.4f}\n"
                 response += "\n"
-            
+
             # Warning about forbidden comparisons
             forbidden_weight = bacon.get("forbidden_comparison_weight", 0)
             if forbidden_weight > 0.1:  # More than 10% weight on forbidden comparisons
-                response += "⚠️ **Warning:** High weight on forbidden comparisons detected!\n"
+                response += (
+                    "Warning: High weight on forbidden comparisons detected!\n"
+                )
                 response += f"- {forbidden_weight:.1%} of weight comes from already-treated units as controls\n"
                 response += "- This suggests potential bias in TWFE estimates\n\n"
-        
+
         # TWFE weights analysis
         if "twfe_weights" in diagnostics:
             weights = diagnostics["twfe_weights"]
-            response += "## TWFE Weights Analysis\n\n"
-            response += f"- **Negative Weights:** {weights.get('negative_weight_share', 0):.1%}\n"
-            response += f"- **Robustness Measure:** {weights.get('robustness_measure', 'N/A')}\n\n"
-            
-            if weights.get("negative_weight_share", 0) > 0.05:  # More than 5% negative weights
-                response += "⚠️ **Warning:** Substantial negative weighting detected!\n"
+            response += "TWFE Weights Analysis\n\n"
+            response += f"- Negative Weights: {weights.get('negative_weight_share', 0):.1%}\n"
+            response += f"- Robustness Measure: {weights.get('robustness_measure', 'N/A')}\n\n"
+
+            if (
+                weights.get("negative_weight_share", 0) > 0.05
+            ):  # More than 5% negative weights
+                response += "Warning: Substantial negative weighting detected!\n"
                 response += "- TWFE estimates may be severely biased\n"
                 response += "- Consider using heterogeneity-robust estimators\n\n"
-        
+
         # Recommendations
-        response += "## Recommendations\n\n"
-        
+        response += "Recommendations\n\n"
+
         is_problematic = (
-            diagnostics.get("bacon_decomp", {}).get("forbidden_comparison_weight", 0) > 0.1 or
-            diagnostics.get("twfe_weights", {}).get("negative_weight_share", 0) > 0.05
+            diagnostics.get("bacon_decomp", {}).get("forbidden_comparison_weight", 0)
+            > 0.1
+            or diagnostics.get("twfe_weights", {}).get("negative_weight_share", 0)
+            > 0.05
         )
-        
+
         if is_problematic:
-            response += "🚨 **TWFE appears problematic for your data. Recommended actions:**\n\n"
-            response += "1. **Use robust estimators:** Try Callaway & Sant'Anna, Sun & Abraham, or imputation estimators\n"
-            response += "2. **Run specific estimator:** e.g., `estimate_callaway_santanna` or `estimate_sun_abraham`\n"
-            response += "3. **Conduct sensitivity analysis:** Use `sensitivity_analysis` to test robustness\n"
-            response += "4. **Check parallel trends:** Run `power_analysis` for pre-trends testing power\n"
+            response += (
+                "TWFE appears problematic for your data. Recommended actions:\n\n"
+            )
+            response += "1. Use robust estimators: Try Callaway & Sant'Anna, Sun & Abraham, or imputation estimators\n"
+            response += "2. Run specific estimator: e.g., estimate_callaway_santanna or estimate_sun_abraham\n"
+            response += "3. Conduct sensitivity analysis: Use sensitivity_analysis to test robustness\n"
+            response += "4. Check parallel trends: Run power_analysis for pre-trends testing power\n"
         else:
-            response += "✅ **TWFE appears relatively unproblematic for your data.**\n\n"
+            response += (
+                "TWFE appears relatively unproblematic for your data.\n\n"
+            )
             response += "- Low weight on forbidden comparisons\n"
             response += "- Minimal negative weighting\n"
             response += "- Standard TWFE may be appropriate, but consider robust methods for comparison\n"
-        
+
         return response
-        
+
     except Exception as e:
         logger.error(f"Error in diagnose_twfe: {e}")
-        return f"❌ **Error:** {str(e)}"
+        return f"Error: {str(e)}"
 
 
 @mcp.tool()
-async def diagnose_goodman_bacon(
-    formula: str,
-    id_var: str,
-    time_var: str
-) -> str:
+async def diagnose_goodman_bacon(formula: str, id_var: str, time_var: str) -> str:
     """
     Run Goodman-Bacon (2021) decomposition using bacondecomp::bacon().
 
-    **What it checks:** FORBIDDEN COMPARISONS in staggered DID designs
+    What it checks: FORBIDDEN COMPARISONS in staggered DID designs
     - Detects when treated units at different times are compared to each other
     - Shows weight distribution across comparison types
     - Identifies "Earlier vs Later" and "Later vs Earlier" comparisons
 
-    **Important:** This is ONE of TWO diagnostic checks you should run:
+    Important: This is ONE of TWO diagnostic checks you should run:
     1. This tool → Checks for forbidden comparisons (timing issues)
-    2. `analyze_twfe_weights()` → Checks for negative weights
+    2. analyze_twfe_weights() → Checks for negative weights
 
     Both can cause TWFE bias, but they are DIFFERENT problems!
 
@@ -674,8 +635,8 @@ async def diagnose_goodman_bacon(
         Decomposition results showing weights and estimates for each 2×2 comparison
 
     Next Steps:
-        - Run `analyze_twfe_weights()` to complete diagnostic analysis
-        - Use `create_diagnostic_plots()` to visualize results
+        - Run analyze_twfe_weights() to complete diagnostic analysis
+        - Use create_diagnostic_plots() to visualize results
         - If bias detected, use robust estimators (CS, SA, BJS, Gardner)
 
     Example:
@@ -687,86 +648,90 @@ async def diagnose_goodman_bacon(
     """
     try:
         if get_analyzer().data is None:
-            return "❌ No data loaded. Please load data first."
-        
+            return "No data loaded. Please load data first."
+
         if not get_analyzer().r_estimators:
-            return "❌ R integration not available. Please install rpy2 and required R packages."
-        
+            return "R integration not available. Please install rpy2 and required R packages."
+
         # Run Goodman-Bacon decomposition
         result = get_analyzer().r_estimators.goodman_bacon_decomposition(
-            data=get_analyzer().data,
-            formula=formula,
-            id_var=id_var,
-            time_var=time_var
+            data=get_analyzer().data, formula=formula, id_var=id_var, time_var=time_var
         )
-        
+
         if result["status"] != "success":
-            return f"❌ Error: {result.get('message', 'Unknown error')}"
+            return f"Error: {result.get('message', 'Unknown error')}"
 
         # Store diagnostic results for visualization
         analyzer_instance = get_analyzer()
         analyzer_instance.diagnostics["bacon_decomp"] = result
-        logger.info(f"Stored Goodman-Bacon diagnostic results. Current diagnostics keys: {list(analyzer_instance.diagnostics.keys())}")
+        logger.info(
+            f"Stored Goodman-Bacon diagnostic results. Current diagnostics keys: {list(analyzer_instance.diagnostics.keys())}"
+        )
         logger.info(f"Analyzer instance ID: {id(analyzer_instance)}")
 
         # Format results
-        response = "# Goodman-Bacon Decomposition Results 📊\n\n"
-        response += f"**Overall TWFE Estimate:** {result['overall_estimate']:.4f}\n\n"
-        response += "## Comparison Breakdown\n\n"
+        response = "# Goodman-Bacon Decomposition Results\n\n"
+        response += f"Overall TWFE Estimate: {result['overall_estimate']:.4f}\n\n"
+        response += "Comparison Breakdown\n\n"
 
-        for comp_type, details in result['comparison_types'].items():
-            response += f"**{comp_type}:**\n"
+        for comp_type, details in result["comparison_types"].items():
+            response += f"{comp_type}:\n"
             response += f"- Weight: {details['weight']:.1%}\n"
             response += f"- Estimate: {details['estimate']:.4f}\n\n"
 
         # Warning if forbidden comparisons detected
-        response += "## Diagnosis\n\n"
+        response += "Diagnosis\n\n"
 
-        if result['forbidden_comparison_weight'] > 0.1:
-            response += "⚠️ **WARNING:** Forbidden comparisons detected!\n\n"
-            response += f"- **{result['forbidden_comparison_weight']:.1%}** of weight from \"Earlier vs Later\" / \"Later vs Earlier\" comparisons\n"
-            response += "- These comparisons mix treatment effects from different periods\n"
-            response += "- TWFE estimates likely biased due to **treatment timing issues**\n\n"
-            response += "**What this means:**\n"
+        if result["forbidden_comparison_weight"] > 0.1:
+            response += "WARNING: Forbidden comparisons detected!\n\n"
+            response += f'- {result["forbidden_comparison_weight"]:.1%} of weight from "Earlier vs Later" / "Later vs Earlier" comparisons\n'
+            response += (
+                "- These comparisons mix treatment effects from different periods\n"
+            )
+            response += (
+                "- TWFE estimates likely biased due to treatment timing issues\n\n"
+            )
+            response += "What this means:\n"
             response += "- Units treated at different times are being compared\n"
-            response += "- This violates the assumption needed for valid TWFE estimation\n\n"
-            response += "**Recommendation:** Use heterogeneity-robust estimators designed for staggered adoption\n\n"
-            response += "⚠️ **Note:** This checks forbidden comparisons. Also run `analyze_twfe_weights()` to check for **negative weights**\n"
+            response += (
+                "- This violates the assumption needed for valid TWFE estimation\n\n"
+            )
+            response += "Recommendation: Use heterogeneity-robust estimators designed for staggered adoption\n\n"
+            response += "Note: This checks forbidden comparisons. Also run analyze_twfe_weights() to check for negative weights.\n"
         else:
-            response += "✅ **No forbidden comparisons detected**\n\n"
-            response += "- Comparisons are primarily between treated and never-treated units\n"
+            response += "No forbidden comparisons detected.\n\n"
+            response += (
+                "- Comparisons are primarily between treated and never-treated units\n"
+            )
             response += "- This specific bias source is minimal\n\n"
-            response += "⚠️ **Note:** This only checks forbidden comparisons. Also run `analyze_twfe_weights()` to check for **negative weights**\n"
-        
+            response += "Note: This only checks forbidden comparisons. Also run analyze_twfe_weights() to check for negative weights.\n"
+
         return response
-        
+
     except Exception as e:
         logger.error(f"Error in Goodman-Bacon decomposition: {e}")
-        return f"❌ **Error:** {str(e)}"
+        return f"Error: {str(e)}"
 
 
 @mcp.tool()
 async def analyze_twfe_weights(
-    outcome_col: str,
-    unit_col: str,
-    time_col: str,
-    treatment_col: str
+    outcome_col: str, unit_col: str, time_col: str, treatment_col: str
 ) -> str:
     """
     Analyze negative weights in TWFE estimation.
 
-    **What it checks:** NEGATIVE WEIGHTS in TWFE regression
+    What it checks: NEGATIVE WEIGHTS in TWFE regression
     - Detects observations that receive negative weights
     - Negative weights can flip the sign of treatment effects
     - Shows how many observations are affected
 
-    **Important:** This is ONE of TWO diagnostic checks you should run:
-    1. `diagnose_goodman_bacon()` → Checks for forbidden comparisons (timing issues)
+    Important: This is ONE of TWO diagnostic checks you should run:
+    1. diagnose_goodman_bacon() → Checks for forbidden comparisons (timing issues)
     2. This tool → Checks for negative weights
 
     Both can cause TWFE bias, but they are DIFFERENT problems!
 
-    **Key distinction:**
+    Key distinction:
     - Forbidden comparisons: Wrong units being compared (can have positive weights)
     - Negative weights: Weights with wrong sign (< 0)
 
@@ -780,8 +745,8 @@ async def analyze_twfe_weights(
         Detailed weight analysis showing negative weight shares and affected groups
 
     Next Steps:
-        - Run `diagnose_goodman_bacon()` to complete diagnostic analysis
-        - Use `create_diagnostic_plots()` to visualize results
+        - Run diagnose_goodman_bacon() to complete diagnostic analysis
+        - Use create_diagnostic_plots() to visualize results
         - If bias detected, use robust estimators (CS, SA, BJS, Gardner)
 
     Examples:
@@ -797,112 +762,126 @@ async def analyze_twfe_weights(
     """
     try:
         analyzer = get_analyzer()
-        
+
         if analyzer.data is None:
-            return "❌ **Error:** No data loaded. Please load data first."
-        
+            return "Error: No data loaded. Please load data first."
+
         # Call R estimator for weights analysis
         result = analyzer.r_estimators.twfe_weights_analysis(
             data=analyzer.data,
             outcome_col=outcome_col,
             unit_col=unit_col,
             time_col=time_col,
-            treatment_col=treatment_col
+            treatment_col=treatment_col,
         )
-        
-        if result["status"] != "success":
-            return f"❌ **Error:** {result.get('message', 'Unknown error')}"
-        
-        # Format results
-        response = "# TWFE Weights Analysis Report 📊\n\n"
-        
-        response += "## Analysis Setup\n\n"
-        response += f"- **Outcome:** `{outcome_col}`\n"
-        response += f"- **Unit:** `{unit_col}`\n"
-        response += f"- **Time:** `{time_col}`\n"
-        response += f"- **Treatment:** `{treatment_col}`\n\n"
-        
-        # Overall statistics
-        response += "## Weight Distribution\n\n"
-        response += f"- **Negative Weight Share:** {result.get('negative_weight_share', 0):.2%}\n"
-        response += f"- **Number of Negative Weights:** {result.get('n_negative_weights', 0)}\n"
-        if result.get('negative_weight_share', 0) > 0:
-            response += f"- **Positive Weight Share:** {(1 - result.get('negative_weight_share', 0)):.2%}\n"
-        else:
-            response += "- **Positive Weight Share:** 100.00%\n"
-        response += "\n"
-        
-        # Robustness measure
-        if 'robustness_measure' in result and result['robustness_measure'] is not None:
-            response += "## Robustness Assessment\n\n"
-            response += f"**Robustness Parameter (σ):** {result['robustness_measure']:.4f}\n\n"
-            
-            if result['robustness_measure'] < 0.5:
-                response += "✅ **High Robustness:** TWFE estimates are relatively stable\n"
-            elif result['robustness_measure'] < 1.0:
-                response += "⚠️ **Moderate Robustness:** Some sensitivity to treatment effect heterogeneity\n"
-            else:
-                response += "❌ **Low Robustness:** TWFE estimates highly sensitive to heterogeneity\n"
-            response += "\n"
-        
-        # Detailed weight breakdown
-        if 'weight_details' in result:
-            response += "## Weight Details by Group\n\n"
-            details = result['weight_details']
-            
-            if 'by_cohort' in details:
-                response += "### By Treatment Cohort\n\n"
-                for cohort, info in details['by_cohort'].items():
-                    response += f"**Cohort {cohort}:**\n"
-                    response += f"- Observations: {info['n']}\n"
-                    response += f"- Average Weight: {info['avg_weight']:.4f}\n"
-                    response += f"- Negative Weight Share: {info['neg_share']:.2%}\n\n"
-            
-            if 'by_period' in details:
-                response += "### By Time Period\n\n"
-                for period, info in details['by_period'].items():
-                    response += f"**Period {period}:**\n"
-                    response += f"- Observations: {info['n']}\n"
-                    response += f"- Average Weight: {info['avg_weight']:.4f}\n"
-                    response += f"- Negative Weight Share: {info['neg_share']:.2%}\n\n"
-        
-        # Interpretation and recommendations
-        response += "## Interpretation\n\n"
 
-        neg_share = result.get('negative_weight_share', 0)
-        if neg_share < 0.01:
-            response += "✅ **No negative weights detected**\n\n"
-            response += "- No observations receive negative weights in TWFE regression\n"
-            response += "- This specific source of bias is not present\n\n"
-            response += "⚠️ **Note:** This only checks for negative weights. Other bias sources may exist:\n"
-            response += "- Run `diagnose_goodman_bacon()` to check for **forbidden comparisons**\n"
-            response += "- Forbidden comparisons can cause bias even without negative weights\n"
-        elif neg_share < 0.05:
-            response += "⚠️ **Some negative weighting detected**\n\n"
-            response += f"- {neg_share:.1%} of weights are negative\n"
-            response += "- These negative weights can cause bias when treatment effects vary\n"
-            response += "- Consider robust estimators for comparison\n\n"
-            response += "**Also check:** Run `diagnose_goodman_bacon()` for forbidden comparisons analysis\n"
+        if result["status"] != "success":
+            return f"Error: {result.get('message', 'Unknown error')}"
+
+        # Format results
+        response = "# TWFE Weights Analysis Report\n\n"
+
+        response += "Analysis Setup\n\n"
+        response += f"- Outcome: {outcome_col}\n"
+        response += f"- Unit: {unit_col}\n"
+        response += f"- Time: {time_col}\n"
+        response += f"- Treatment: {treatment_col}\n\n"
+
+        # Overall statistics
+        response += "Weight Distribution\n\n"
+        response += f"- Negative Weight Share: {result.get('negative_weight_share', 0):.2%}\n"
+        response += (
+            f"- Number of Negative Weights: {result.get('n_negative_weights', 0)}\n"
+        )
+        if result.get("negative_weight_share", 0) > 0:
+            response += f"- Positive Weight Share: {(1 - result.get('negative_weight_share', 0)):.2%}\n"
         else:
-            response += "❌ **Substantial negative weighting detected**\n\n"
+            response += "- Positive Weight Share: 100.00%\n"
+        response += "\n"
+
+        # Robustness measure
+        if "robustness_measure" in result and result["robustness_measure"] is not None:
+            response += "Robustness Assessment\n\n"
+            response += (
+                f"Robustness Parameter (σ): {result['robustness_measure']:.4f}\n\n"
+            )
+
+            if result["robustness_measure"] < 0.5:
+                response += (
+                    "High Robustness: TWFE estimates are relatively stable\n"
+                )
+            elif result["robustness_measure"] < 1.0:
+                response += "Moderate Robustness: Some sensitivity to treatment effect heterogeneity.\n"
+            else:
+                response += "Low Robustness: TWFE estimates highly sensitive to heterogeneity.\n"
+            response += "\n"
+
+        # Detailed weight breakdown
+        if "weight_details" in result:
+            response += "Weight Details by Group\n\n"
+            details = result["weight_details"]
+
+            if "by_cohort" in details:
+                response += "By Treatment Cohort\n\n"
+                for cohort, info in details["by_cohort"].items():
+                    response += f"Cohort {cohort}:\n"
+                    response += f"- Observations: {info['n']}\n"
+                    response += f"- Average Weight: {info['avg_weight']:.4f}\n"
+                    response += f"- Negative Weight Share: {info['neg_share']:.2%}\n\n"
+
+            if "by_period" in details:
+                response += "By Time Period\n\n"
+                for period, info in details["by_period"].items():
+                    response += f"Period {period}:\n"
+                    response += f"- Observations: {info['n']}\n"
+                    response += f"- Average Weight: {info['avg_weight']:.4f}\n"
+                    response += f"- Negative Weight Share: {info['neg_share']:.2%}\n\n"
+
+        # Interpretation and recommendations
+        response += "Interpretation\n\n"
+
+        neg_share = result.get("negative_weight_share", 0)
+        if neg_share < 0.01:
+            response += "No negative weights detected.\n\n"
+            response += (
+                "- No observations receive negative weights in TWFE regression\n"
+            )
+            response += "- This specific source of bias is not present\n\n"
+            response += "Note: This only checks for negative weights. Other bias sources may exist:\n"
+            response += "- Run diagnose_goodman_bacon() to check for forbidden comparisons\n"
+            response += (
+                "- Forbidden comparisons can cause bias even without negative weights\n"
+            )
+        elif neg_share < 0.05:
+            response += "Some negative weighting detected\n\n"
+            response += f"- {neg_share:.1%} of weights are negative\n"
+            response += (
+                "- These negative weights can cause bias when treatment effects vary\n"
+            )
+            response += "- Consider robust estimators for comparison\n\n"
+            response += "Also check: Run diagnose_goodman_bacon() for forbidden comparisons analysis\n"
+        else:
+            response += "Substantial negative weighting detected\n\n"
             response += f"- {neg_share:.1%} of weights are negative\n"
             response += "- TWFE estimates likely biased due to negative weighting\n"
             response += "- Strongly recommend using heterogeneity-robust estimators:\n"
-            response += "  - Callaway & Sant'Anna (`estimate_callaway_santanna`)\n"
-            response += "  - Sun & Abraham (`estimate_sun_abraham`)\n"
-            response += "  - Imputation methods (`estimate_bjs_imputation`)\n\n"
-            response += "**Also check:** Run `diagnose_goodman_bacon()` for additional bias sources\n"
-        
+            response += "  - Callaway & Sant'Anna (estimate_callaway_santanna)\n"
+            response += "  - Sun & Abraham (estimate_sun_abraham)\n"
+            response += "  - Imputation methods (estimate_bjs_imputation)\n\n"
+            response += "Also check: Run diagnose_goodman_bacon() for additional bias sources\n"
+
         # Store diagnostic results for visualization
         analyzer.diagnostics["twfe_weights"] = result
-        logger.info(f"Stored TWFE weights diagnostic results. Current diagnostics keys: {list(analyzer.diagnostics.keys())}")
+        logger.info(
+            f"Stored TWFE weights diagnostic results. Current diagnostics keys: {list(analyzer.diagnostics.keys())}"
+        )
         logger.info(f"Analyzer instance ID: {id(analyzer)}")
 
         return response
-        
+
     except Exception as e:
         logger.error(f"Error in analyze_twfe_weights: {e}")
-        return f"❌ **Error:** {str(e)}"
+        return f"Error: {str(e)}"
 
 
 @mcp.tool()
@@ -913,14 +892,14 @@ async def estimate_callaway_santanna(
     gname: str,
     control_group: str = "notyettreated",
     xformla: Optional[str] = None,
-    anticipation: int = 0
+    anticipation: int = 0,
 ) -> str:
     """
     Callaway & Sant'Anna (2021) doubly robust DID estimator.
-    
+
     This estimator is robust to heterogeneous treatment effects and uses
     either not-yet-treated or never-treated units as controls.
-    
+
     Args:
         yname: Outcome variable name
         tname: Time variable name
@@ -929,63 +908,21 @@ async def estimate_callaway_santanna(
         control_group: "notyettreated" or "nevertreated"
         xformla: Covariate formula (e.g., "~ X1 + X2")
         anticipation: Number of periods before treatment with anticipation effects
-    
+
     Returns:
         Event study estimates with overall ATT
     """
     try:
         if get_analyzer().data is None:
-            return "❌ No data loaded. Please load data first."
+            return "No data loaded. Please load data first."
 
         if not get_analyzer().r_estimators:
-            return "❌ R integration not available. Please install rpy2 and required R packages."
+            return "R integration not available. Please install rpy2 and required R packages."
 
-        # Auto-preprocess data (same logic as workflow)
-        # This allows direct method calls to work with string IDs and binary treatment
-        analyzer = get_analyzer()
-        data = analyzer.data
-
-        # Detect if gname is binary treatment (needs cohort creation) or already a cohort
-        is_binary_treatment = False
-        if gname in data.columns:
-            unique_vals = data[gname].dropna().unique()
-            # If only 0/1 or True/False, it's binary treatment
-            if len(unique_vals) <= 2 and set(unique_vals).issubset({0, 1, True, False}):
-                is_binary_treatment = True
-
-        try:
-            if is_binary_treatment:
-                # gname is binary treatment, need to create cohort
-                processed = analyzer.prepare_data_for_estimation(
-                    unit_col=idname,
-                    time_col=tname,
-                    treatment_col=gname,  # Use gname as treatment
-                    cohort_col=None  # Will auto-create cohort_auto
-                )
-            else:
-                # gname is already a cohort, just handle unit_col conversion if needed
-                # Still call preprocessing for unit_col conversion
-                if idname in data.columns and data[idname].dtype == 'object':
-                    # Need to convert string unit IDs
-                    if 'unit_id_numeric' not in data.columns:
-                        unit_id_map = {name: idx for idx, name in enumerate(data[idname].unique())}
-                        analyzer.data['unit_id_numeric'] = analyzer.data[idname].map(unit_id_map)
-                        analyzer.config['unit_col'] = 'unit_id_numeric'
-                        analyzer.config['unit_col_original'] = idname
-                        logger.info(f"Auto-created numeric unit ID 'unit_id_numeric' from string '{idname}'")
-                    actual_idname = 'unit_id_numeric'
-                else:
-                    actual_idname = idname
-                actual_gname = gname
-
-            if is_binary_treatment:
-                actual_idname = processed['unit_col']
-                actual_gname = processed['cohort_col']
-
-        except Exception as e:
-            logger.warning(f"Auto-preprocessing failed: {e}. Using original column names.")
-            actual_idname = idname
-            actual_gname = gname
+        # Auto-preprocess data: delegates to the single source of truth
+        processed = _preprocess_did_columns(idname, tname, gname)
+        actual_idname = processed["idname"]
+        actual_gname = processed["gname"]
 
         # Run Callaway & Sant'Anna estimation
         result = get_analyzer().r_estimators.callaway_santanna_estimator(
@@ -995,11 +932,11 @@ async def estimate_callaway_santanna(
             idname=actual_idname,
             gname=actual_gname,
             control_group=control_group,
-            xformla=xformla
+            xformla=xformla,
         )
-        
+
         if result["status"] != "success":
-            return f"❌ Error: {result.get('message', 'Unknown error')}"
+            return f"Error: {result.get('message', 'Unknown error')}"
 
         # Store results for visualization
         get_analyzer().results["callaway_santanna"] = result
@@ -1007,53 +944,54 @@ async def estimate_callaway_santanna(
         logger.info("Stored Callaway & Sant'Anna results for visualization")
 
         # Format results
-        response = "# Callaway & Sant'Anna (2021) Results 📈\n\n"
-        response += f"**Method:** Doubly Robust DID\n"
-        response += f"**Control Group:** {result['control_group']}\n"
-        response += f"**Aggregation:** Group (official recommendation)\n\n"
+        response = "# Callaway & Sant'Anna (2021) Results\n\n"
+        response += f"Method: Doubly Robust DID\n"
+        response += f"Control Group: {result['control_group']}\n"
+        response += f"Aggregation: Group (official recommendation)\n\n"
 
         # Overall ATT
-        overall = result['overall_att']
-        response += "## Overall Average Treatment Effect\n\n"
-        response += f"- **Estimate:** {overall['estimate']:.4f}\n"
-        response += f"- **Std. Error:** {overall['se']:.4f}\n"
-        response += f"- **95% CI:** [{overall['ci_lower']:.4f}, {overall['ci_upper']:.4f}]\n"
-        response += f"- **p-value:** {overall['pvalue']:.4f}\n"
-        response += f"- **Source:** type='group' aggregation\n\n"
-        
+        overall = result["overall_att"]
+        response += "Overall Average Treatment Effect\n\n"
+        response += f"- Estimate: {overall['estimate']:.4f}\n"
+        response += f"- Std. Error: {overall['se']:.4f}\n"
+        response += (
+            f"- 95% CI: [{overall['ci_lower']:.4f}, {overall['ci_upper']:.4f}]\n"
+        )
+        response += f"- p-value: {overall['pvalue']:.4f}\n"
+        response += f"- Source: type='group' aggregation\n\n"
+
         # Event study
-        response += "## Event Study Estimates\n\n"
+        response += "Event Study Estimates\n\n"
         response += "| Event Time | Estimate | Std. Error | 95% CI | p-value |\n"
         response += "|------------|----------|------------|--------|----------|\n"
-        
-        for e, est in sorted(result['event_study'].items()):
+
+        for e, est in sorted(result["event_study"].items()):
             response += f"| {e:^10} | {est['estimate']:^8.4f} | {est['se']:^10.4f} | "
             response += f"[{est['ci_lower']:.3f}, {est['ci_upper']:.3f}] | {est['pvalue']:.4f} |\n"
-        
+
         # Interpretation
-        if overall['pvalue'] < 0.05:
-            response += "\n✅ **Statistically significant treatment effect detected**\n"
+        if overall["pvalue"] < 0.05:
+            response += "\nStatistically significant treatment effect detected\n"
         else:
-            response += "\n⚠️ **No statistically significant treatment effect at 5% level**\n"
-        
+            response += (
+                "\nNo statistically significant treatment effect at 5% level\n"
+            )
+
         return response
-        
+
     except Exception as e:
         logger.error(f"Error in Callaway & Sant'Anna estimation: {e}")
-        return f"❌ **Error:** {str(e)}"
+        return f"Error: {str(e)}"
 
 
 @mcp.tool()
-async def estimate_sun_abraham(
-    formula: str,
-    cluster_var: Optional[str] = None
-) -> str:
+async def estimate_sun_abraham(formula: str, cluster_var: Optional[str] = None) -> str:
     """
     Sun & Abraham (2021) interaction-weighted estimator using direct formula.
-    
+
     Uses the fixest package with sunab() to estimate heterogeneity-robust
     treatment effects for staggered adoption designs.
-    
+
     Args:
         formula: R formula with sunab() function - passed directly to fixest::feols()
                 Examples:
@@ -1061,10 +999,10 @@ async def estimate_sun_abraham(
                 - "outcome ~ x1 + sunab(cohort, time) | unit + time" (with covariates)
                 - "y ~ sunab(g, t) | i + t" (simple names)
         cluster_var: Variable for clustering standard errors (optional)
-    
+
     Returns:
         Event study estimates with clustered standard errors
-        
+
     Note:
         This method directly passes your formula to R's fixest package without
         parameter parsing, supporting any valid fixest formula syntax including
@@ -1072,67 +1010,71 @@ async def estimate_sun_abraham(
     """
     try:
         if get_analyzer().data is None:
-            return "❌ No data loaded. Please load data first."
-        
+            return "No data loaded. Please load data first."
+
         if not get_analyzer().r_estimators:
-            return "❌ R integration not available. Please install rpy2 and required R packages."
-        
+            return "R integration not available. Please install rpy2 and required R packages."
+
         # Validate formula contains sunab() function
         if "sunab(" not in formula:
-            return "❌ Formula must contain sunab() function. Example: 'lemp ~ sunab(first.treat, year) | countyreal + year'"
-        
+            return "Formula must contain sunab() function. Example: 'lemp ~ sunab(first.treat, year) | countyreal + year'"
+
         # Run Sun & Abraham estimation with direct formula (no parsing)
         result = get_analyzer().r_estimators.sun_abraham_estimator(
-            data=get_analyzer().data,
-            formula=formula,
-            cluster_var=cluster_var
+            data=get_analyzer().data, formula=formula, cluster_var=cluster_var
         )
-        
+
         if result["status"] != "success":
-            return f"❌ Error: {result.get('message', 'Unknown error')}"
-        
+            return f"Error: {result.get('message', 'Unknown error')}"
+
         # Store results for visualization and sensitivity analysis
         get_analyzer().results["sun_abraham"] = result
         get_analyzer().results["latest"] = result
         logger.info("Stored Sun & Abraham results for sensitivity analysis")
-        
+
         # Format results
-        response = "# Sun & Abraham (2021) Results 📊\n\n"
-        response += f"**Method:** Interaction-Weighted Estimator\n\n"
+        response = "# Sun & Abraham (2021) Results\n\n"
+        response += f"Method: Interaction-Weighted Estimator\n\n"
 
         # Overall ATT (if available)
         if "overall_att" in result:
-            overall = result['overall_att']
-            response += "## Overall Average Treatment Effect\n\n"
-            response += f"- **Estimate:** {overall['estimate']:.4f}\n"
-            response += f"- **Std. Error:** {overall['se']:.4f}\n"
-            response += f"- **95% CI:** [{overall['ci_lower']:.4f}, {overall['ci_upper']:.4f}]\n"
-            response += f"- **p-value:** {overall['pvalue']:.4f}\n\n"
+            overall = result["overall_att"]
+            response += "Overall Average Treatment Effect\n\n"
+            response += f"- Estimate: {overall['estimate']:.4f}\n"
+            response += f"- Std. Error: {overall['se']:.4f}\n"
+            response += f"- 95% CI: [{overall['ci_lower']:.4f}, {overall['ci_upper']:.4f}]\n"
+            response += f"- p-value: {overall['pvalue']:.4f}\n\n"
 
         # Event study
-        response += "## Event Study Estimates\n\n"
+        response += "Event Study Estimates\n\n"
         response += "| Event Time | Estimate | Std. Error | 95% CI | p-value |\n"
         response += "|------------|----------|------------|--------|----------|\n"
-        
-        for e, est in sorted(result['event_study'].items()):
+
+        for e, est in sorted(result["event_study"].items()):
             response += f"| {e:^10} | {est['estimate']:^8.4f} | {est['se']:^10.4f} | "
             response += f"[{est['ci_lower']:.3f}, {est['ci_upper']:.3f}] | {est['pvalue']:.4f} |\n"
-        
+
         # Check for pre-trends
-        pre_period_estimates = [est for e, est in result['event_study'].items() if e < 0]
+        pre_period_estimates = [
+            est for e, est in result["event_study"].items() if e < 0
+        ]
         if pre_period_estimates:
-            significant_pretrends = sum(1 for est in pre_period_estimates if est['pvalue'] < 0.05)
+            significant_pretrends = sum(
+                1 for est in pre_period_estimates if est["pvalue"] < 0.05
+            )
             if significant_pretrends > 0:
-                response += f"\n⚠️ **Warning:** {significant_pretrends} pre-treatment periods show significant effects\n"
-                response += "This may indicate violations of parallel trends assumption.\n"
+                response += f"\nWarning: {significant_pretrends} pre-treatment periods show significant effects\n"
+                response += (
+                    "This may indicate violations of parallel trends assumption.\n"
+                )
             else:
-                response += "\n✅ **No significant pre-trends detected**\n"
-        
+                response += "\nNo significant pre-trends detected\n"
+
         return response
-        
+
     except Exception as e:
         logger.error(f"Error in Sun & Abraham estimation: {e}")
-        return f"❌ **Error:** {str(e)}"
+        return f"Error: {str(e)}"
 
 
 @mcp.tool()
@@ -1142,7 +1084,7 @@ async def estimate_bjs_imputation(
     time_col: str,
     cohort_col: str,  # REQUIRED - not Optional
     horizon: int = 10,
-    pretrends_test: bool = True
+    pretrends_test: bool = True,
 ) -> str:
     """
     Borusyak, Jaravel & Spiess (2024) imputation estimator.
@@ -1180,15 +1122,15 @@ async def estimate_bjs_imputation(
     """
     try:
         if get_analyzer().data is None:
-            return "❌ No data loaded. Please load data first."
+            return "No data loaded. Please load data first."
 
         if not get_analyzer().r_estimators:
-            return "❌ R integration not available. Please install rpy2 and required R packages."
+            return "R integration not available. Please install rpy2 and required R packages."
 
         # Auto-preprocess data (same logic as workflow)
         processed = _preprocess_did_columns(unit_col, time_col, cohort_col)
-        actual_unit_col = processed['idname']
-        actual_cohort_col = processed['gname']
+        actual_unit_col = processed["idname"]
+        actual_cohort_col = processed["gname"]
 
         # Run BJS Imputation estimation
         result = get_analyzer().r_estimators.bjs_imputation_estimator(
@@ -1198,11 +1140,11 @@ async def estimate_bjs_imputation(
             time_col=time_col,
             cohort_col=actual_cohort_col,
             horizon=horizon,
-            pretrends_test=pretrends_test
+            pretrends_test=pretrends_test,
         )
-        
+
         if result["status"] != "success":
-            return f"❌ Error: {result.get('message', 'Unknown error')}"
+            return f"Error: {result.get('message', 'Unknown error')}"
 
         # Store results for visualization and sensitivity analysis
         get_analyzer().results["bjs_imputation"] = result
@@ -1210,61 +1152,69 @@ async def estimate_bjs_imputation(
         logger.info("Stored BJS Imputation results for sensitivity analysis")
 
         # Format results
-        response = "# Borusyak, Jaravel & Spiess (2024) Results 📊\n\n"
-        response += f"**Method:** Imputation Estimator\n"
-        response += f"**Horizon:** {horizon} periods\n\n"
-        
+        response = "# Borusyak, Jaravel & Spiess (2024) Results\n\n"
+        response += f"Method: Imputation Estimator\n"
+        response += f"Horizon: {horizon} periods\n\n"
+
         # Overall ATT if available
         if "overall_att" in result:
-            overall = result['overall_att']
-            response += "## Overall Average Treatment Effect\n\n"
-            response += f"- **Estimate:** {overall['estimate']:.4f}\n"
-            response += f"- **Std. Error:** {overall['se']:.4f}\n"
-            response += f"- **95% CI:** [{overall['ci_lower']:.4f}, {overall['ci_upper']:.4f}]\n"
-            response += f"- **p-value:** {overall['pvalue']:.4f}\n\n"
-        
+            overall = result["overall_att"]
+            response += "Overall Average Treatment Effect\n\n"
+            response += f"- Estimate: {overall['estimate']:.4f}\n"
+            response += f"- Std. Error: {overall['se']:.4f}\n"
+            response += f"- 95% CI: [{overall['ci_lower']:.4f}, {overall['ci_upper']:.4f}]\n"
+            response += f"- p-value: {overall['pvalue']:.4f}\n\n"
+
         # Event study
-        response += "## Event Study Estimates\n\n"
+        response += "Event Study Estimates\n\n"
         response += "| Event Time | Estimate | Std. Error | 95% CI | p-value |\n"
         response += "|------------|----------|------------|--------|----------|\n"
-        
-        for e, est in sorted(result['event_study'].items()):
+
+        for e, est in sorted(result["event_study"].items()):
             response += f"| {e:^10} | {est['estimate']:^8.4f} | {est['se']:^10.4f} | "
             response += f"[{est['ci_lower']:.3f}, {est['ci_upper']:.3f}] | {est['pvalue']:.4f} |\n"
-        
+
         # Pre-trends analysis
         if pretrends_test and "pretrends_result" in result:
             pretrends = result["pretrends_result"]
-            response += f"\n## Pre-trends Test\n\n"
-            response += f"- **Test Statistic:** {pretrends.get('statistic', 'N/A')}\n"
-            response += f"- **p-value:** {pretrends.get('pvalue', 'N/A')}\n"
-            
-            if pretrends.get('pvalue', 1) < 0.05:
-                response += "- **Result:** ⚠️ Significant pre-trends detected\n"
+            response += f"\nPre-trends Test\n\n"
+            response += f"- Test Statistic: {pretrends.get('statistic', 'N/A')}\n"
+            response += f"- p-value: {pretrends.get('pvalue', 'N/A')}\n"
+
+            if pretrends.get("pvalue", 1) < 0.05:
+                response += "- Result: Significant pre-trends detected\n"
             else:
-                response += "- **Result:** ✅ No significant pre-trends\n"
-        
+                response += "- Result: No significant pre-trends\n"
+
         # Check for pre-trends in event study
-        pre_period_estimates = [est for e, est in result['event_study'].items() if e < 0]
+        pre_period_estimates = [
+            est for e, est in result["event_study"].items() if e < 0
+        ]
         if pre_period_estimates:
-            significant_pretrends = sum(1 for est in pre_period_estimates if est['pvalue'] < 0.05)
+            significant_pretrends = sum(
+                1 for est in pre_period_estimates if est["pvalue"] < 0.05
+            )
             if significant_pretrends > 0:
-                response += f"\n⚠️ **Warning:** {significant_pretrends} pre-treatment periods show significant effects\n"
-                response += "This may indicate violations of parallel trends assumption.\n"
+                response += f"\nWarning: {significant_pretrends} pre-treatment periods show significant effects\n"
+                response += (
+                    "This may indicate violations of parallel trends assumption.\n"
+                )
             else:
-                response += "\n✅ **No significant pre-trends detected**\n"
-        
+                response += "\nNo significant pre-trends detected\n"
+
         # Statistical significance interpretation
-        if "overall_att" in result and result['overall_att']['pvalue'] < 0.05:
-            response += "\n✅ **Statistically significant treatment effect detected**\n"
+        if "overall_att" in result and result["overall_att"]["pvalue"] < 0.05:
+            response += "\nStatistically significant treatment effect detected\n"
         elif "overall_att" in result:
-            response += "\n⚠️ **No statistically significant treatment effect at 5% level**\n"
-        
+            response += (
+                "\nNo statistically significant treatment effect at 5% level\n"
+            )
+
         return response
-        
+
     except Exception as e:
         logger.error(f"Error in BJS Imputation estimation: {e}")
-        return f"❌ **Error:** {str(e)}"
+        return f"Error: {str(e)}"
 
 
 @mcp.tool()
@@ -1277,17 +1227,17 @@ async def estimate_dcdh(
     mode: str = "dyn",
     effects: int = 5,
     placebo: int = 5,
-    controls: Optional[List[str]] = None
+    controls: Optional[List[str]] = None,
 ) -> str:
     """
     de Chaisemartin & D'Haultfoeuille (2020) estimator.
-    
+
     Uses the DIDmultiplegt approach to address negative weights problem
     in staggered DID designs with heterogeneous treatment effects.
-    
+
     Args:
         outcome_col: Outcome variable name
-        unit_col: Unit identifier name  
+        unit_col: Unit identifier name
         time_col: Time variable name
         treatment_col: Treatment indicator variable name
         cohort_col: Treatment cohort variable (optional, auto-detected if None)
@@ -1295,32 +1245,32 @@ async def estimate_dcdh(
         effects: Number of dynamic effects to estimate (default: 5)
         placebo: Number of placebo periods to test (default: 5)
         controls: List of control variables (optional)
-        
+
     Returns:
         Event study estimates with negative weights diagnostics
-        
+
     Examples:
         >>> # Basic usage
         >>> estimate_dcdh("lemp", "countyreal", "year", "treat")
-        
+
         >>> # With dynamic effects and placebos
         >>> estimate_dcdh("outcome", "unit", "time", "treatment", effects=7, placebo=2)
-        
+
         >>> # With control variables
         >>> estimate_dcdh("y", "id", "t", "d", controls=["x1", "x2"])
     """
     try:
         if get_analyzer().data is None:
-            return "❌ No data loaded. Please load data first."
-        
+            return "No data loaded. Please load data first."
+
         if not get_analyzer().r_estimators:
-            return "❌ R integration not available. Please install rpy2 and required R packages."
+            return "R integration not available. Please install rpy2 and required R packages."
 
         # Auto-preprocess data (same logic as workflow)
         # Use cohort_col if provided, otherwise use treatment_col
         gname_input = cohort_col if cohort_col else treatment_col
         processed = _preprocess_did_columns(unit_col, time_col, gname_input)
-        actual_unit_col = processed['idname']
+        actual_unit_col = processed["idname"]
 
         # Run DCDH estimation
         result = get_analyzer().r_estimators.dcdh_estimator(
@@ -1333,11 +1283,11 @@ async def estimate_dcdh(
             mode=mode,
             effects=effects,
             placebo=placebo,
-            controls=controls
+            controls=controls,
         )
-        
+
         if result["status"] != "success":
-            return f"❌ Error: {result.get('message', 'Unknown error')}"
+            return f"Error: {result.get('message', 'Unknown error')}"
 
         # Store results for visualization and sensitivity analysis
         get_analyzer().results["dcdh"] = result
@@ -1345,80 +1295,92 @@ async def estimate_dcdh(
         logger.info("Stored DCDH results for sensitivity analysis")
 
         # Format results
-        response = "# de Chaisemartin & D'Haultfoeuille (2020) Results 📊\n\n"
-        response += f"**Method:** Fuzzy DID with Negative Weights Correction\n"
-        response += f"**Mode:** {mode.upper()}\n"
-        response += f"**Effects Estimated:** {effects} periods\n\n"
-        
+        response = "# de Chaisemartin & D'Haultfoeuille (2020) Results\n\n"
+        response += f"Method: Fuzzy DID with Negative Weights Correction\n"
+        response += f"Mode: {mode.upper()}\n"
+        response += f"Effects Estimated: {effects} periods\n\n"
+
         # Overall ATT if available
         if "overall_att" in result:
-            overall = result['overall_att']
-            response += "## Overall Average Treatment Effect\n\n"
-            response += f"- **Estimate:** {overall['estimate']:.4f}\n"
-            response += f"- **Std. Error:** {overall['se']:.4f}\n"
-            response += f"- **95% CI:** [{overall['ci_lower']:.4f}, {overall['ci_upper']:.4f}]\n"
-            response += f"- **p-value:** {overall['pvalue']:.4f}\n\n"
-        
+            overall = result["overall_att"]
+            response += "Overall Average Treatment Effect\n\n"
+            response += f"- Estimate: {overall['estimate']:.4f}\n"
+            response += f"- Std. Error: {overall['se']:.4f}\n"
+            response += f"- 95% CI: [{overall['ci_lower']:.4f}, {overall['ci_upper']:.4f}]\n"
+            response += f"- p-value: {overall['pvalue']:.4f}\n\n"
+
         # Event study / Dynamic effects
         if "event_study" in result:
-            response += "## Event Study Estimates\n\n"
+            response += "Event Study Estimates\n\n"
             response += "| Event Time | Estimate | Std. Error | 95% CI | p-value |\n"
             response += "|------------|----------|------------|--------|----------|\n"
-            
-            for e, est in sorted(result['event_study'].items()):
-                response += f"| {e:^10} | {est['estimate']:^8.4f} | {est['se']:^10.4f} | "
+
+            for e, est in sorted(result["event_study"].items()):
+                response += (
+                    f"| {e:^10} | {est['estimate']:^8.4f} | {est['se']:^10.4f} | "
+                )
                 response += f"[{est['ci_lower']:.3f}, {est['ci_upper']:.3f}] | {est['pvalue']:.4f} |\n"
-        
+
         # Negative weights diagnostics
         if "negative_weights" in result:
             neg_weights = result["negative_weights"]
-            response += f"\n## Negative Weights Diagnostics\n\n"
-            response += f"- **Share of Negative Weights:** {neg_weights.get('share', 0):.1%}\n"
-            response += f"- **Min Weight:** {neg_weights.get('min_weight', 'N/A')}\n"
-            response += f"- **Max Weight:** {neg_weights.get('max_weight', 'N/A')}\n"
-            
-            if neg_weights.get('share', 0) > 0.1:
-                response += "- **Warning:** ⚠️ Substantial negative weights detected!\n"
-                response += "- **Implication:** TWFE estimates likely biased\n"
+            response += f"\nNegative Weights Diagnostics\n\n"
+            response += (
+                f"- Share of Negative Weights: {neg_weights.get('share', 0):.1%}\n"
+            )
+            response += f"- Min Weight: {neg_weights.get('min_weight', 'N/A')}\n"
+            response += f"- Max Weight: {neg_weights.get('max_weight', 'N/A')}\n"
+
+            if neg_weights.get("share", 0) > 0.1:
+                response += "- Warning: Substantial negative weights detected!\n"
+                response += "- Implication: TWFE estimates likely biased\n"
             else:
-                response += "- **Status:** ✅ Low negative weights burden\n"
-        
+                response += "- Status: Low negative weights burden\n"
+
         # Placebo tests if requested
         if placebo > 0 and "placebo_tests" in result:
             placebo_results = result["placebo_tests"]
-            response += f"\n## Placebo Tests (Pre-treatment)\n\n"
+            response += f"\nPlacebo Tests (Pre-treatment)\n\n"
             response += "| Period | Estimate | Std. Error | p-value | Test Result |\n"
             response += "|--------|----------|------------|---------|-------------|\n"
-            
+
             for p, test in placebo_results.items():
-                test_result = "✅ Pass" if test['pvalue'] > 0.05 else "❌ Fail"
-                response += f"| {p:^6} | {test['estimate']:^8.4f} | {test['se']:^10.4f} | "
+                test_result = "Pass" if test["pvalue"] > 0.05 else "Fail"
+                response += (
+                    f"| {p:^6} | {test['estimate']:^8.4f} | {test['se']:^10.4f} | "
+                )
                 response += f"{test['pvalue']:^7.4f} | {test_result:^11} |\n"
-            
-            failed_tests = sum(1 for test in placebo_results.values() if test['pvalue'] <= 0.05)
+
+            failed_tests = sum(
+                1 for test in placebo_results.values() if test["pvalue"] <= 0.05
+            )
             if failed_tests > 0:
-                response += f"\n⚠️ **Warning:** {failed_tests} placebo test(s) failed\n"
+                response += f"\nWarning: {failed_tests} placebo test(s) failed\n"
                 response += "This suggests potential violations of parallel trends.\n"
             else:
-                response += "\n✅ **All placebo tests passed**\n"
-        
+                response += "\nAll placebo tests passed\n"
+
         # Statistical significance interpretation
-        if "overall_att" in result and result['overall_att']['pvalue'] < 0.05:
-            response += "\n✅ **Statistically significant treatment effect detected**\n"
+        if "overall_att" in result and result["overall_att"]["pvalue"] < 0.05:
+            response += "\nStatistically significant treatment effect detected\n"
         elif "overall_att" in result:
-            response += "\n⚠️ **No statistically significant treatment effect at 5% level**\n"
-        
+            response += (
+                "\nNo statistically significant treatment effect at 5% level\n"
+            )
+
         # Method-specific insights
-        response += f"\n## Method Insights\n\n"
-        response += f"- **Advantage:** Addresses negative weights problem in TWFE\n"
-        response += f"- **Innovation:** Explicitly models treatment effect heterogeneity\n"
-        response += f"- **Robustness:** Built-in placebo testing capability\n"
-        
+        response += f"\nMethod Insights\n\n"
+        response += f"- Advantage: Addresses negative weights problem in TWFE\n"
+        response += (
+            f"- Innovation: Explicitly models treatment effect heterogeneity\n"
+        )
+        response += f"- Robustness: Built-in placebo testing capability\n"
+
         return response
-        
+
     except Exception as e:
         logger.error(f"Error in DCDH estimation: {e}")
-        return f"❌ **Error:** {str(e)}"
+        return f"Error: {str(e)}"
 
 
 @mcp.tool()
@@ -1431,7 +1393,7 @@ async def estimate_efficient(
     event_time: Optional[List[int]] = None,
     use_cs: bool = False,
     use_sa: bool = False,
-    beta: Optional[float] = 1.0
+    beta: Optional[float] = 1.0,
 ) -> str:
     """
     Roth & Sant'Anna (2023) efficient estimator.
@@ -1452,187 +1414,34 @@ async def estimate_efficient(
               beta=0: Simple difference-in-means
               beta=1: Callaway & Sant'Anna weighting
               Ignored if use_cs or use_sa is True.
-        
+
     Returns:
         Event study estimates with efficient ATT
-        
+
     Examples:
         >>> # Basic efficient estimation
         >>> estimate_efficient("lemp", "countyreal", "year", "first.treat")
-        
+
         >>> # With specific event times
-        >>> estimate_efficient("outcome", "unit", "time", "cohort", 
+        >>> estimate_efficient("outcome", "unit", "time", "cohort",
         ...                    event_time=[-2, -1, 0, 1, 2])
-        
+
         >>> # With method comparison
         >>> estimate_efficient("y", "id", "t", "g", use_cs=True, use_sa=True)
     """
-    try:
-        # ⚠️ DEPRECATION WARNING ⚠️
-        return """# ⚠️ Efficient Estimator is Currently DISABLED ⚠️
-
-## Critical Issues Identified
-
-The Roth & Sant'Anna (2023) Efficient Estimator has been **temporarily disabled** due to systematic problems across multiple datasets:
-
-### Problem Summary:
-1. **PENN.csv**: ATT = -1.44 (185× larger than other methods, opposite direction)
-2. **california_prop99.csv**: Complete failure (R error: "argument is of length zero")
-3. **CPS.csv**: ATT = +0.061 (4-40× larger, false significance)
-
-### Why This is Serious:
-- Results are **dramatically different** from all other robust DID methods
-- Sometimes **complete failure** to run
-- Sometimes **false significance** when all other methods show no effect
-- **Direction reversal** (negative vs positive) compared to other methods
-
-### Recommended Alternatives:
-Use these **proven robust methods** instead:
-
-1. **Callaway & Sant'Anna (2021)** - Most robust, widely trusted
-   ```python
-   estimate_callaway_santanna(yname, tname, idname, gname)
-   ```
-
-2. **BJS Imputation (2024)** - Fast and efficient
-   ```python
-   estimate_bjs_imputation(outcome_col, unit_col, time_col, cohort_col)
-   ```
-
-3. **Gardner Two-Stage (2022)** - Computationally simple
-   ```python
-   estimate_gardner_two_stage(outcome_col, unit_col, time_col, cohort_col)
-   ```
-
-### Status:
-🔴 **DISABLED** until root cause is identified and resolved.
-
-For details, see: `/KNOWN_ISSUES.md` Issue #1
-
-**If you need efficient estimation, use Callaway & Sant'Anna or BJS Imputation - both are statistically efficient and reliable.**
-"""
-
-        # Code below is disabled
-        if get_analyzer().data is None:
-            return "❌ No data loaded. Please load data first."
-
-        if not get_analyzer().r_estimators:
-            return "❌ R integration not available. Please install rpy2 and required R packages."
-
-        # Auto-preprocess data (same logic as workflow)
-        processed = _preprocess_did_columns(unit_col, time_col, cohort_col)
-        actual_unit_col = processed['idname']
-        actual_cohort_col = processed['gname']
-
-        # Run Efficient estimation
-        result = get_analyzer().r_estimators.efficient_estimator(
-            data=get_analyzer().data,
-            outcome_col=outcome_col,
-            unit_col=actual_unit_col,
-            time_col=time_col,
-            cohort_col=actual_cohort_col,
-            estimand=estimand,
-            event_time=event_time,
-            use_cs=use_cs,
-            use_sa=use_sa,
-            beta=beta
-        )
-        
-        if result["status"] != "success":
-            return f"❌ Error: {result.get('message', 'Unknown error')}"
-
-        # Store results for visualization and sensitivity analysis
-        get_analyzer().results["efficient"] = result
-        get_analyzer().results["latest"] = result
-        logger.info("Stored Efficient estimator results for sensitivity analysis")
-
-        # Format results
-        response = "# Roth & Sant'Anna (2023) Efficient Estimator Results 📊\n\n"
-        response += f"**Method:** Efficient Staggered Adoption Estimator\n"
-        response += f"**Estimand:** {estimand.title()}\n"
-
-        # Display beta parameter correctly based on use_cs/use_sa
-        if use_cs:
-            response += f"**Efficiency Parameter (β):** 1.0 (Callaway & Sant'Anna weighting)\n\n"
-        elif use_sa:
-            response += f"**Efficiency Parameter (β):** 1.0 (Sun & Abraham weighting, last-treated-only)\n\n"
-        elif beta is None:
-            response += f"**Efficiency Parameter (β):** Optimal plug-in (data-driven)\n"
-            response += f"⚠️  **Warning:** Plug-in beta may have finite sample bias. Use only for large samples (n > 1000).\n\n"
-        elif beta == 1.0:
-            response += f"**Efficiency Parameter (β):** 1.0 (DEFAULT - Robust in finite samples)\n\n"
-        else:
-            response += f"**Efficiency Parameter (β):** {beta}\n\n"
-        
-        # Overall Efficient ATT
-        if "overall_att" in result:
-            efficient_att = result['overall_att']
-            response += "## Overall Average Treatment Effect\n\n"
-            response += f"- **Estimate:** {efficient_att['estimate']:.4f}\n"
-            response += f"- **Std. Error:** {efficient_att['se']:.4f}\n"
-            response += f"- **95% CI:** [{efficient_att['ci_lower']:.4f}, {efficient_att['ci_upper']:.4f}]\n"
-            response += f"- **p-value:** {efficient_att['pvalue']:.4f}\n\n"
-
-        # Display estimation notes if available
-        if "notes" in result and result["notes"]:
-            response += f"**Estimation Notes:** {result['notes']}\n\n"
-
-        # Event study
-        response += "## Event Study Estimates\n\n"
-        response += "| Event Time | Estimate | Std. Error | 95% CI | p-value |\n"
-        response += "|------------|----------|------------|--------|----------|\n"
-        
-        for e, est in sorted(result['event_study'].items()):
-            response += f"| {e:^10} | {est['estimate']:^8.4f} | {est['se']:^10.4f} | "
-            response += f"[{est['ci_lower']:.3f}, {est['ci_upper']:.3f}] | {est['pvalue']:.4f} |\n"
-        
-        # Efficiency gains if comparison methods were used
-        if use_cs and "cs_comparison" in result:
-            cs_comp = result["cs_comparison"]
-            response += f"\n## Efficiency Comparison (vs. Callaway & Sant'Anna)\n\n"
-            response += f"- **Efficient SE:** {efficient_att.get('se', 'N/A'):.4f}\n"
-            response += f"- **CS SE:** {cs_comp.get('se', 'N/A'):.4f}\n"
-            if efficient_att.get('se') and cs_comp.get('se'):
-                efficiency_gain = (cs_comp['se'] - efficient_att['se']) / cs_comp['se'] * 100
-                response += f"- **Efficiency Gain:** {efficiency_gain:.1f}%\n"
-        
-        if use_sa and "sa_comparison" in result:
-            sa_comp = result["sa_comparison"]
-            response += f"\n## Efficiency Comparison (vs. Sun & Abraham)\n\n"
-            response += f"- **Efficient SE:** {efficient_att.get('se', 'N/A'):.4f}\n"
-            response += f"- **SA SE:** {sa_comp.get('se', 'N/A'):.4f}\n"
-            if efficient_att.get('se') and sa_comp.get('se'):
-                efficiency_gain = (sa_comp['se'] - efficient_att['se']) / sa_comp['se'] * 100
-                response += f"- **Efficiency Gain:** {efficiency_gain:.1f}%\n"
-        
-        # Pre-trends analysis
-        pre_period_estimates = [est for e, est in result['event_study'].items() if e < 0]
-        if pre_period_estimates:
-            significant_pretrends = sum(1 for est in pre_period_estimates if est['pvalue'] < 0.05)
-            if significant_pretrends > 0:
-                response += f"\n⚠️ **Warning:** {significant_pretrends} pre-treatment periods show significant effects\n"
-                response += "This may indicate violations of parallel trends assumption.\n"
-            else:
-                response += "\n✅ **No significant pre-trends detected**\n"
-        
-        # Statistical significance interpretation
-        if "overall_att" in result and result['overall_att']['pvalue'] < 0.05:
-            response += "\n✅ **Statistically significant treatment effect detected**\n"
-        elif "overall_att" in result:
-            response += "\n⚠️ **No statistically significant treatment effect at 5% level**\n"
-        
-        # Method-specific insights
-        response += f"\n## Method Insights\n\n"
-        response += f"- **Advantage:** Optimal statistical efficiency for staggered adoption\n"
-        response += f"- **Innovation:** Minimizes asymptotic variance under heterogeneity\n"
-        response += f"- **Theory:** Based on semiparametric efficiency bounds\n"
-        response += f"- **Robustness:** Maintains consistency under treatment heterogeneity\n"
-        
-        return response
-        
-    except Exception as e:
-        logger.error(f"Error in Efficient estimation: {e}")
-        return f"❌ **Error:** {str(e)}"
+    # This estimator is disabled due to systematic numerical issues across
+    # multiple benchmark datasets (see KNOWN_ISSUES.md #1).
+    # Use estimate_callaway_santanna, estimate_bjs_imputation, or
+    # estimate_gardner_two_stage instead.
+    return (
+        "# Efficient Estimator (Roth & Sant'Anna 2023) - Temporarily Disabled\n\n"
+        "This method produced unreliable results across benchmark datasets "
+        "(magnitude errors, direction reversals, and runtime failures).\n\n"
+        "Use these alternatives instead:\n"
+        "- estimate_callaway_santanna - Doubly robust, widely trusted\n"
+        "- estimate_bjs_imputation - Fast imputation-based estimator\n"
+        "- estimate_gardner_two_stage - Computationally simple two-stage\n"
+    )
 
 
 @mcp.tool()
@@ -1641,7 +1450,7 @@ async def estimate_gardner_two_stage(
     unit_col: str,
     time_col: str,
     cohort_col: str,  # REQUIRED - not Optional
-    covariates: Optional[List[str]] = None
+    covariates: Optional[List[str]] = None,
 ) -> str:
     """
     Gardner (2022) two-stage DID estimator with EVENT STUDY specification.
@@ -1681,15 +1490,15 @@ async def estimate_gardner_two_stage(
     """
     try:
         if get_analyzer().data is None:
-            return "❌ No data loaded. Please load data first."
+            return "No data loaded. Please load data first."
 
         if not get_analyzer().r_estimators:
-            return "❌ R integration not available. Please install rpy2 and required R packages."
+            return "R integration not available. Please install rpy2 and required R packages."
 
         # Auto-preprocess data (same logic as workflow)
         processed = _preprocess_did_columns(unit_col, time_col, cohort_col)
-        actual_unit_col = processed['idname']
-        actual_cohort_col = processed['gname']
+        actual_unit_col = processed["idname"]
+        actual_cohort_col = processed["gname"]
 
         # Run Gardner Two-Stage estimation (EVENT STUDY mode always)
         result = get_analyzer().r_estimators.gardner_two_stage_estimator(
@@ -1698,11 +1507,11 @@ async def estimate_gardner_two_stage(
             unit_col=actual_unit_col,
             time_col=time_col,
             cohort_col=actual_cohort_col,
-            covariates=covariates
+            covariates=covariates,
         )
-        
+
         if result["status"] != "success":
-            return f"❌ Error: {result.get('message', 'Unknown error')}"
+            return f"Error: {result.get('message', 'Unknown error')}"
 
         # Store results for visualization and sensitivity analysis
         get_analyzer().results["gardner_two_stage"] = result
@@ -1710,74 +1519,84 @@ async def estimate_gardner_two_stage(
         logger.info("Stored Gardner Two-Stage results for sensitivity analysis")
 
         # Format results
-        response = "# Gardner (2022) Two-Stage DID Results 📊\n\n"
-        response += f"**Method:** Two-Stage DID Estimator\n"
-        
+        response = "# Gardner (2022) Two-Stage DID Results\n\n"
+        response += f"Method: Two-Stage DID Estimator\n"
+
         if covariates:
-            response += f"**Covariates:** {len(covariates)} variables\n"
+            response += f"Covariates: {len(covariates)} variables\n"
         response += "\n"
-        
+
         # Overall ATT if available
         if "overall_att" in result:
-            overall = result['overall_att']
-            response += "## Overall Average Treatment Effect\n\n"
-            response += f"- **Estimate:** {overall['estimate']:.4f}\n"
-            response += f"- **Std. Error:** {overall['se']:.4f}\n"
-            response += f"- **95% CI:** [{overall['ci_lower']:.4f}, {overall['ci_upper']:.4f}]\n"
-            response += f"- **p-value:** {overall['pvalue']:.4f}\n\n"
-        
+            overall = result["overall_att"]
+            response += "Overall Average Treatment Effect\n\n"
+            response += f"- Estimate: {overall['estimate']:.4f}\n"
+            response += f"- Std. Error: {overall['se']:.4f}\n"
+            response += f"- 95% CI: [{overall['ci_lower']:.4f}, {overall['ci_upper']:.4f}]\n"
+            response += f"- p-value: {overall['pvalue']:.4f}\n\n"
+
         # Event study
-        response += "## Event Study Estimates\n\n"
+        response += "Event Study Estimates\n\n"
         response += "| Event Time | Estimate | Std. Error | 95% CI | p-value |\n"
         response += "|------------|----------|------------|--------|----------|\n"
-        
-        for e, est in sorted(result['event_study'].items()):
+
+        for e, est in sorted(result["event_study"].items()):
             response += f"| {e:^10} | {est['estimate']:^8.4f} | {est['se']:^10.4f} | "
             response += f"[{est['ci_lower']:.3f}, {est['ci_upper']:.3f}] | {est['pvalue']:.4f} |\n"
-        
+
         # Two-stage procedure details
         if "stage_info" in result:
             stage_info = result["stage_info"]
-            response += f"\n## Two-Stage Procedure Details\n\n"
-            response += f"- **Stage 1:** Impute counterfactual outcomes using never-treated units\n"
-            response += f"- **Stage 2:** Estimate treatment effects using imputed outcomes\n"
-            
+            response += f"\nTwo-Stage Procedure Details\n\n"
+            response += f"- Stage 1: Impute counterfactual outcomes using never-treated units\n"
+            response += (
+                f"- Stage 2: Estimate treatment effects using imputed outcomes\n"
+            )
+
             if "imputation_r2" in stage_info:
-                response += f"- **Imputation R²:** {stage_info['imputation_r2']:.3f}\n"
+                response += f"- Imputation R²: {stage_info['imputation_r2']:.3f}\n"
             if "treated_units" in stage_info:
-                response += f"- **Treated Units:** {stage_info['treated_units']:,}\n"
+                response += f"- Treated Units: {stage_info['treated_units']:,}\n"
             if "control_units" in stage_info:
-                response += f"- **Control Units:** {stage_info['control_units']:,}\n"
-        
+                response += f"- Control Units: {stage_info['control_units']:,}\n"
+
         # Pre-trends analysis
-        pre_period_estimates = [est for e, est in result['event_study'].items() if e < 0]
+        pre_period_estimates = [
+            est for e, est in result["event_study"].items() if e < 0
+        ]
         if pre_period_estimates:
-            significant_pretrends = sum(1 for est in pre_period_estimates if est['pvalue'] < 0.05)
+            significant_pretrends = sum(
+                1 for est in pre_period_estimates if est["pvalue"] < 0.05
+            )
             if significant_pretrends > 0:
-                response += f"\n⚠️ **Warning:** {significant_pretrends} pre-treatment periods show significant effects\n"
-                response += "This may indicate violations of parallel trends assumption.\n"
+                response += f"\nWarning: {significant_pretrends} pre-treatment periods show significant effects\n"
+                response += (
+                    "This may indicate violations of parallel trends assumption.\n"
+                )
             else:
-                response += "\n✅ **No significant pre-trends detected**\n"
-        
+                response += "\nNo significant pre-trends detected\n"
+
         # Statistical significance interpretation
-        if "overall_att" in result and result['overall_att']['pvalue'] < 0.05:
-            response += "\n✅ **Statistically significant treatment effect detected**\n"
+        if "overall_att" in result and result["overall_att"]["pvalue"] < 0.05:
+            response += "\nStatistically significant treatment effect detected\n"
         elif "overall_att" in result:
-            response += "\n⚠️ **No statistically significant treatment effect at 5% level**\n"
-        
+            response += (
+                "\nNo statistically significant treatment effect at 5% level\n"
+            )
+
         # Method-specific insights
-        response += f"\n## Method Insights\n\n"
-        response += f"- **Advantage:** Computationally simple and fast\n"
-        response += f"- **Innovation:** Two-stage imputation approach\n"
-        response += f"- **Robustness:** Handles heterogeneous treatment effects\n"
-        response += f"- **Flexibility:** Easy to incorporate covariates\n"
-        response += f"- **Implementation:** Built on standard regression methods\n"
-        
+        response += f"\nMethod Insights\n\n"
+        response += f"- Advantage: Computationally simple and fast\n"
+        response += f"- Innovation: Two-stage imputation approach\n"
+        response += f"- Robustness: Handles heterogeneous treatment effects\n"
+        response += f"- Flexibility: Easy to incorporate covariates\n"
+        response += f"- Implementation: Built on standard regression methods\n"
+
         return response
 
     except Exception as e:
         logger.error(f"Error in Gardner Two-Stage estimation: {e}")
-        return f"❌ **Error:** {str(e)}"
+        return f"Error: {str(e)}"
 
 
 @mcp.tool()
@@ -1791,7 +1610,7 @@ async def estimate_gsynth(
     CV: bool = True,
     r_range: tuple = (0, 5),
     se: bool = True,
-    inference: str = "parametric"
+    inference: str = "parametric",
 ) -> str:
     """
     Generalized Synthetic Control Method (Xu 2017).
@@ -1821,14 +1640,14 @@ async def estimate_gsynth(
     """
     try:
         if get_analyzer().data is None:
-            return "❌ No data loaded. Please load data first."
+            return "No data loaded. Please load data first."
 
         if not get_analyzer().r_estimators:
-            return "❌ R integration not available. Please install rpy2 and required R packages."
+            return "R integration not available. Please install rpy2 and required R packages."
 
         # Auto-preprocess data (same logic as workflow)
         processed = _preprocess_did_columns(unit_col, time_col, treatment_col)
-        actual_unit_col = processed['idname']
+        actual_unit_col = processed["idname"]
 
         # Run gsynth estimation
         result = get_analyzer().r_estimators.gsynth_estimator(
@@ -1842,11 +1661,11 @@ async def estimate_gsynth(
             CV=CV,
             r_range=r_range,
             se=se,
-            inference=inference
+            inference=inference,
         )
 
         if result["status"] != "success":
-            return f"❌ Error: {result.get('message', 'Unknown error')}"
+            return f"Error: {result.get('message', 'Unknown error')}"
 
         # Store results
         get_analyzer().results["gsynth"] = result
@@ -1854,55 +1673,61 @@ async def estimate_gsynth(
         logger.info("Stored gsynth results")
 
         # Format results
-        response = "# Generalized Synthetic Control (Xu 2017) Results 📊\n\n"
-        response += f"**Method:** Interactive Fixed Effects Model\n"
-        response += f"**Fixed Effects:** {result['force']}\n"
-        response += f"**Inference:** {result['inference']}\n"
+        response = "# Generalized Synthetic Control (Xu 2017) Results\n\n"
+        response += f"Method: Interactive Fixed Effects Model\n"
+        response += f"Fixed Effects: {result['force']}\n"
+        response += f"Inference: {result['inference']}\n"
 
         if covariates:
-            response += f"**Covariates:** {len(covariates)} variables\n"
+            response += f"Covariates: {len(covariates)} variables\n"
         response += "\n"
 
         # Overall ATT
-        overall = result['overall_att']
-        response += "## Overall Average Treatment Effect\n\n"
-        response += f"- **Estimate:** {overall['estimate']:.4f}\n"
-        if overall['se'] is not None:
-            response += f"- **Std. Error:** {overall['se']:.4f}\n"
-            response += f"- **95% CI:** [{overall['ci_lower']:.4f}, {overall['ci_upper']:.4f}]\n"
+        overall = result["overall_att"]
+        response += "Overall Average Treatment Effect\n\n"
+        response += f"- Estimate: {overall['estimate']:.4f}\n"
+        if overall["se"] is not None:
+            response += f"- Std. Error: {overall['se']:.4f}\n"
+            response += f"- 95% CI: [{overall['ci_lower']:.4f}, {overall['ci_upper']:.4f}]\n"
         response += "\n"
 
         # Model information
-        response += "## Model Information\n\n"
-        response += f"- **Number of Factors:** {result['n_factors']}\n"
-        response += f"- **Treated Units:** {result['n_treated']}\n"
-        response += f"- **Control Units:** {result['n_control']}\n"
-        response += f"- **Time Periods:** {result['n_periods']}\n"
+        response += "Model Information\n\n"
+        response += f"- Number of Factors: {result['n_factors']}\n"
+        response += f"- Treated Units: {result['n_treated']}\n"
+        response += f"- Control Units: {result['n_control']}\n"
+        response += f"- Time Periods: {result['n_periods']}\n"
         if "pre_treatment_mspe" in result:
-            response += f"- **Pre-treatment MSPE:** {result['pre_treatment_mspe']:.4f}\n"
+            response += (
+                f"- Pre-treatment MSPE: {result['pre_treatment_mspe']:.4f}\n"
+            )
         response += "\n"
 
         # Method insights
-        response += "## Method Insights\n\n"
-        response += "- **Advantage:** Relaxes parallel trends assumption via interactive fixed effects\n"
-        response += "- **Innovation:** Estimates latent factors capturing time-varying confounders\n"
-        response += "- **Robustness:** Handles staggered adoption automatically\n"
-        response += "- **Flexibility:** Cross-validation selects optimal number of factors\n"
-        response += "- **Best Use:** When parallel trends violated due to unobserved time-varying confounders\n"
+        response += "Method Insights\n\n"
+        response += "- Advantage: Relaxes parallel trends assumption via interactive fixed effects\n"
+        response += "- Innovation: Estimates latent factors capturing time-varying confounders\n"
+        response += "- Robustness: Handles staggered adoption automatically\n"
+        response += (
+            "- Flexibility: Cross-validation selects optimal number of factors\n"
+        )
+        response += "- Best Use: When parallel trends violated due to unobserved time-varying confounders\n"
 
         # Statistical significance
-        if overall['se'] is not None:
-            z_stat = abs(overall['estimate'] / overall['se'])
+        if overall["se"] is not None:
+            z_stat = abs(overall["estimate"] / overall["se"])
             if z_stat > 1.96:
-                response += "\n✅ **Statistically significant treatment effect detected**\n"
+                response += (
+                    "\nStatistically significant treatment effect detected\n"
+                )
             else:
-                response += "\n⚠️ **No statistically significant treatment effect at 5% level**\n"
+                response += "\nNo statistically significant treatment effect at 5% level\n"
 
         return response
 
     except Exception as e:
         logger.error(f"Error in gsynth estimation: {e}")
-        return f"❌ **Error:** {str(e)}"
+        return f"Error: {str(e)}"
 
 
 @mcp.tool()
@@ -1912,7 +1737,7 @@ async def estimate_synthdid(
     time_col: str,
     treatment_col: str,
     cohort_col: Optional[str] = None,
-    vcov_method: str = "placebo"
+    vcov_method: str = "placebo",
 ) -> str:
     """
     Synthetic Difference-in-Differences estimator (Arkhangelsky et al. 2019).
@@ -1940,15 +1765,15 @@ async def estimate_synthdid(
     """
     try:
         if get_analyzer().data is None:
-            return "❌ No data loaded. Please load data first."
+            return "No data loaded. Please load data first."
 
         if not get_analyzer().r_estimators:
-            return "❌ R integration not available. Please install rpy2 and required R packages."
+            return "R integration not available. Please install rpy2 and required R packages."
 
         # Auto-preprocess data (same logic as workflow)
         gname_input = cohort_col if cohort_col else treatment_col
         processed = _preprocess_did_columns(unit_col, time_col, gname_input)
-        actual_unit_col = processed['idname']
+        actual_unit_col = processed["idname"]
 
         # Run synthdid estimation
         result = get_analyzer().r_estimators.synthdid_estimator(
@@ -1958,11 +1783,11 @@ async def estimate_synthdid(
             time_col=time_col,
             treatment_col=treatment_col,
             cohort_col=cohort_col,
-            vcov_method=vcov_method
+            vcov_method=vcov_method,
         )
 
         if result["status"] != "success":
-            return f"❌ Error: {result.get('message', 'Unknown error')}"
+            return f"Error: {result.get('message', 'Unknown error')}"
 
         # Store results
         get_analyzer().results["synthdid"] = result
@@ -1970,73 +1795,440 @@ async def estimate_synthdid(
         logger.info("Stored synthdid results")
 
         # Format results
-        response = "# Synthetic Difference-in-Differences (Arkhangelsky et al. 2019) Results 📊\n\n"
-        response += f"**Method:** Synthetic DiD\n"
-        response += f"**Variance Estimation:** {result['vcov_method']}\n\n"
+        response = "# Synthetic Difference-in-Differences (Arkhangelsky et al. 2019) Results\n\n"
+        response += f"Method: Synthetic DiD\n"
+        response += f"Variance Estimation: {result['vcov_method']}\n\n"
 
         # Overall ATT
-        overall = result['overall_att']
-        response += "## Overall Average Treatment Effect\n\n"
-        response += f"- **Estimate:** {overall['estimate']:.4f}\n"
-        response += f"- **Std. Error:** {overall['se']:.4f}\n"
-        response += f"- **95% CI:** [{overall['ci_lower']:.4f}, {overall['ci_upper']:.4f}]\n\n"
+        overall = result["overall_att"]
+        response += "Overall Average Treatment Effect\n\n"
+        response += f"- Estimate: {overall['estimate']:.4f}\n"
+        response += f"- Std. Error: {overall['se']:.4f}\n"
+        response += (
+            f"- 95% CI: [{overall['ci_lower']:.4f}, {overall['ci_upper']:.4f}]\n\n"
+        )
 
         # Comparison with other methods
         if "comparison_methods" in result:
             comp = result["comparison_methods"]
-            response += "## Method Comparison\n\n"
+            response += "Method Comparison\n\n"
             response += "| Method | Estimate | Description |\n"
             response += "|--------|----------|-------------|\n"
             response += f"| Traditional DiD | {comp['traditional_did']['estimate']:.4f} | {comp['traditional_did']['note']} |\n"
             response += f"| Synthetic Control | {comp['synthetic_control']['estimate']:.4f} | {comp['synthetic_control']['note']} |\n"
-            response += f"| **Synthetic DiD** | **{comp['synthdid']['estimate']:.4f}** | {comp['synthdid']['note']} |\n\n"
+            response += f"| Synthetic DiD | {comp['synthdid']['estimate']:.4f} | {comp['synthdid']['note']} |\n\n"
 
         # Sample information
-        response += "## Sample Information\n\n"
-        response += f"- **Treated Units:** {result['n_treated_units']}\n"
-        response += f"- **Control Units:** {result['n_control_units']}\n"
-        response += f"- **Pre-treatment Periods:** {result['n_pretreatment_periods']}\n"
-        response += f"- **Post-treatment Periods:** {result['n_posttreatment_periods']}\n"
+        response += "Sample Information\n\n"
+        response += f"- Treated Units: {result['n_treated_units']}\n"
+        response += f"- Control Units: {result['n_control_units']}\n"
+        response += f"- Pre-treatment Periods: {result['n_pretreatment_periods']}\n"
+        response += (
+            f"- Post-treatment Periods: {result['n_posttreatment_periods']}\n"
+        )
 
         # Weights information
         if "unit_weights" in result:
-            response += f"\n### Unit Weights\n"
-            response += f"- **Non-zero weights:** {result['unit_weights']['n_nonzero']} control units\n"
-            response += f"- **Maximum weight:** {result['unit_weights']['max_weight']:.4f}\n"
+            response += f"\nUnit Weights\n"
+            response += f"- Non-zero weights: {result['unit_weights']['n_nonzero']} control units\n"
+            response += (
+                f"- Maximum weight: {result['unit_weights']['max_weight']:.4f}\n"
+            )
 
         if "time_weights" in result:
-            response += f"\n### Time Weights\n"
-            response += f"- **Non-zero weights:** {result['time_weights']['n_nonzero']} pre-treatment periods\n"
-            response += f"- **Maximum weight:** {result['time_weights']['max_weight']:.4f}\n"
+            response += f"\nTime Weights\n"
+            response += f"- Non-zero weights: {result['time_weights']['n_nonzero']} pre-treatment periods\n"
+            response += (
+                f"- Maximum weight: {result['time_weights']['max_weight']:.4f}\n"
+            )
 
         response += "\n"
 
         # Method insights
-        response += "## Method Insights\n\n"
-        response += "- **Advantage:** Robust to both parallel trends and interpolation bias\n"
-        response += "- **Innovation:** Combines synthetic control unit weighting with DiD time weighting\n"
-        response += "- **Robustness:** Estimates both unit weights (which controls) and time weights (which periods)\n"
-        response += "- **Comparison:** Automatically compares with traditional DiD and SC methods\n"
-        response += "- **Best Use:** Simultaneous treatment timing with potential violations of parallel trends\n"
-        response += "- **Limitation:** Requires all treated units to start treatment at same time\n"
+        response += "Method Insights\n\n"
+        response += (
+            "- Advantage: Robust to both parallel trends and interpolation bias\n"
+        )
+        response += "- Innovation: Combines synthetic control unit weighting with DiD time weighting\n"
+        response += "- Robustness: Estimates both unit weights (which controls) and time weights (which periods)\n"
+        response += "- Comparison: Automatically compares with traditional DiD and SC methods\n"
+        response += "- Best Use: Simultaneous treatment timing with potential violations of parallel trends\n"
+        response += "- Limitation: Requires all treated units to start treatment at same time\n"
 
         # Statistical significance
-        z_stat = abs(overall['estimate'] / overall['se'])
+        z_stat = abs(overall["estimate"] / overall["se"])
         if z_stat > 1.96:
-            response += "\n✅ **Statistically significant treatment effect detected**\n"
+            response += "\nStatistically significant treatment effect detected\n"
         else:
-            response += "\n⚠️ **No statistically significant treatment effect at 5% level**\n"
+            response += (
+                "\nNo statistically significant treatment effect at 5% level\n"
+            )
 
         return response
 
     except Exception as e:
         logger.error(f"Error in synthdid estimation: {e}")
-        return f"❌ **Error:** {str(e)}"
+        return f"Error: {str(e)}"
+
+
+@mcp.tool()
+async def estimate_drdid(
+    outcome_col: str,
+    unit_col: str,
+    time_col: str,
+    treatment_col: str,
+    covariates: Optional[List[str]] = None,
+    panel: bool = True,
+    est_method: str = "imp",
+    boot: bool = False,
+    nboot: int = 999,
+) -> str:
+    """
+    Doubly Robust Difference-in-Differences estimator (Sant'Anna & Zhao 2020).
+
+    Provides doubly robust estimation combining outcome regression and inverse
+    probability weighting. Consistent if either the outcome model or the
+    propensity score model is correctly specified.
+
+    Best suited for canonical 2-period DID designs with covariates.
+
+    Args:
+        outcome_col: Outcome variable name
+        unit_col: Unit identifier name
+        time_col: Time variable name
+        treatment_col: Binary treatment indicator (0/1)
+        covariates: List of covariate names for outcome and propensity models (optional)
+        panel: True for panel data, False for repeated cross-sections (default: True)
+        est_method: Estimation method:
+            - "imp" (default): Improved doubly robust (Sant'Anna & Zhao 2020)
+            - "trad": Traditional doubly robust
+            - "ipw": Inverse probability weighting only
+            - "reg": Outcome regression only
+        boot: Use bootstrap for inference (default: False uses analytical)
+        nboot: Number of bootstrap replications (default: 999)
+
+    Returns:
+        Formatted estimation results with ATT
+
+    Reference:
+        Sant'Anna, P. H. C. & Zhao, J. (2020). "Doubly Robust Difference-in-
+        Differences Estimators." Journal of Econometrics, 219(1), 101-122.
+    """
+    try:
+        if get_analyzer().data is None:
+            return "No data loaded. Please load data first."
+
+        if not get_analyzer().r_estimators:
+            return "R integration not available. Please install rpy2 and required R packages."
+
+        # Auto-preprocess data (same logic as workflow)
+        processed = _preprocess_did_columns(unit_col, time_col, treatment_col)
+        actual_unit_col = processed["idname"]
+
+        # Run DRDID estimation
+        result = get_analyzer().r_estimators.drdid_estimator(
+            data=get_analyzer().data,
+            outcome_col=outcome_col,
+            unit_col=actual_unit_col,
+            time_col=time_col,
+            treatment_col=treatment_col,
+            covariates=covariates,
+            panel=panel,
+            est_method=est_method,
+            boot=boot,
+            nboot=nboot,
+        )
+
+        if result["status"] != "success":
+            return f"Error: {result.get('message', 'Unknown error')}"
+
+        # Store results
+        get_analyzer().results["drdid"] = result
+        get_analyzer().results["latest"] = result
+        logger.info("Stored DRDID results")
+
+        # Format results
+        response = "# Doubly Robust DID (Sant'Anna & Zhao 2020) Results\n\n"
+        response += f"Method: {result['method']}\n"
+        response += f"Estimation: {est_method.upper()}\n"
+        response += (
+            f"Data Type: {'Panel' if panel else 'Repeated Cross-Sections'}\n"
+        )
+
+        if covariates:
+            response += f"Covariates: {', '.join(covariates)}\n"
+        response += "\n"
+
+        # Overall ATT
+        overall = result["overall_att"]
+        response += "Average Treatment Effect on the Treated (ATT)\n\n"
+        response += f"- Estimate: {overall['estimate']:.4f}\n"
+        response += f"- Std. Error: {overall['se']:.4f}\n"
+        response += (
+            f"- 95% CI: [{overall['ci_lower']:.4f}, {overall['ci_upper']:.4f}]\n"
+        )
+        response += f"- P-value: {overall['pvalue']:.4f}\n\n"
+
+        # Method insights
+        response += "Method Insights\n\n"
+        response += "- Double Robustness: Consistent if either outcome OR propensity model is correct\n"
+        response += "- Improved Estimator: Uses locally efficient semiparametric estimation\n"
+        response += "- Best Use: Canonical 2-period DID with covariates\n"
+        response += "- Limitation: Designed for 2-period settings; for staggered adoption, use CS or etwfe\n"
+
+        # Statistical significance
+        if overall["pvalue"] < 0.05:
+            response += "\nStatistically significant treatment effect detected\n"
+        else:
+            response += (
+                "\nNo statistically significant treatment effect at 5% level\n"
+            )
+
+        return response
+
+    except Exception as e:
+        logger.error(f"Error in DRDID estimation: {e}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool()
+async def estimate_etwfe(
+    outcome_col: str,
+    unit_col: str,
+    time_col: str,
+    cohort_col: str,
+    treatment_col: Optional[str] = None,
+    covariates: Optional[List[str]] = None,
+    vcov: str = "by",
+    by_cohort: bool = True,
+) -> str:
+    """
+    Extended TWFE estimator (Wooldridge 2021, 2023).
+
+    Implements Wooldridge's extended TWFE approach that includes cohort-time
+    interactions to correctly handle heterogeneous treatment effects in
+    staggered DID designs. Built on fixest for fast estimation.
+
+    Args:
+        outcome_col: Outcome variable name
+        unit_col: Unit identifier name
+        time_col: Time variable name
+        cohort_col: Cohort variable (first treatment time; 0 for never-treated)
+        treatment_col: Binary treatment indicator (optional, derived from cohort if absent)
+        covariates: List of covariate names (optional)
+        vcov: Variance-covariance type:
+            - "by" (default): Cluster by cohort*period groups
+            - unit column name: Cluster by unit
+            - "hetero": Heteroskedasticity-robust
+        by_cohort: Report effects by cohort (default: True)
+
+    Returns:
+        Formatted estimation results with ATT and event study
+
+    Reference:
+        Wooldridge, J. M. (2021). "Two-Way Fixed Effects, the Two-Way
+        Mundlak Regression, and Difference-in-Differences Estimators."
+    """
+    try:
+        if get_analyzer().data is None:
+            return "No data loaded. Please load data first."
+
+        if not get_analyzer().r_estimators:
+            return "R integration not available. Please install rpy2 and required R packages."
+
+        # Auto-preprocess data (same logic as workflow)
+        processed = _preprocess_did_columns(unit_col, time_col, cohort_col)
+        actual_unit_col = processed["idname"]
+        actual_cohort_col = processed["gname"]
+
+        # Run etwfe estimation
+        result = get_analyzer().r_estimators.etwfe_estimator(
+            data=get_analyzer().data,
+            outcome_col=outcome_col,
+            unit_col=actual_unit_col,
+            time_col=time_col,
+            cohort_col=actual_cohort_col,
+            treatment_col=treatment_col,
+            covariates=covariates,
+            vcov=vcov,
+            by_cohort=by_cohort,
+        )
+
+        if result["status"] != "success":
+            return f"Error: {result.get('message', 'Unknown error')}"
+
+        # Store results
+        get_analyzer().results["etwfe"] = result
+        get_analyzer().results["latest"] = result
+        logger.info("Stored etwfe results")
+
+        # Format results
+        response = "# Extended TWFE (Wooldridge 2021) Results\n\n"
+        response += f"Method: {result['method']}\n"
+        response += f"VCOV Type: {result['vcov_type']}\n"
+
+        if covariates:
+            response += f"Covariates: {', '.join(covariates)}\n"
+        response += "\n"
+
+        # Overall ATT
+        overall = result["overall_att"]
+        response += "Overall Average Treatment Effect\n\n"
+        response += f"- Estimate: {overall['estimate']:.4f}\n"
+        response += f"- Std. Error: {overall['se']:.4f}\n"
+        response += (
+            f"- 95% CI: [{overall['ci_lower']:.4f}, {overall['ci_upper']:.4f}]\n"
+        )
+        response += f"- P-value: {overall['pvalue']:.4f}\n\n"
+
+        # Event study
+        if result.get("event_study"):
+            response += "Event Study Estimates\n\n"
+            response += "| Event Time | Estimate | Std. Error | P-value |\n"
+            response += "|------------|----------|------------|----------|\n"
+            for period in sorted(result["event_study"].keys()):
+                es = result["event_study"][period]
+                response += f"| {period} | {es['estimate']:.4f} | {es['se']:.4f} | {es['pvalue']:.4f} |\n"
+            response += "\n"
+
+        # Cohort effects
+        if result.get("cohort_effects"):
+            response += "Cohort-Specific Effects\n\n"
+            response += "| Cohort | Estimate | Std. Error |\n"
+            response += "|--------|----------|------------|\n"
+            for cohort, eff in result["cohort_effects"].items():
+                response += f"| {cohort} | {eff['estimate']:.4f} | {eff['se']:.4f} |\n"
+            response += "\n"
+
+        # Method insights
+        response += "Method Insights\n\n"
+        response += "- Approach: Saturated model with cohort-time interactions\n"
+        response += "- Advantage: Correctly handles heterogeneous treatment effects in TWFE framework\n"
+        response += "- Innovation: Wooldridge shows that augmented TWFE with proper interactions is valid\n"
+        response += (
+            "- Robustness: Uses marginaleffects for proper ATT aggregation\n"
+        )
+        response += "- Best Use: Staggered DID with covariates where TWFE framework is preferred\n"
+
+        # Statistical significance
+        if overall["pvalue"] < 0.05:
+            response += "\nStatistically significant treatment effect detected\n"
+        else:
+            response += (
+                "\nNo statistically significant treatment effect at 5% level\n"
+            )
+
+        return response
+
+    except Exception as e:
+        logger.error(f"Error in etwfe estimation: {e}")
+        return f"Error: {str(e)}"
+
+
+@mcp.tool()
+async def create_panel_view(
+    outcome_col: str,
+    treatment_col: str,
+    unit_col: str,
+    time_col: str,
+    output_path: Optional[str] = None,
+    view_type: str = "treat",
+    by_timing: bool = True,
+) -> str:
+    """
+    Create treatment status visualization using the R panelView package.
+
+    Produces a heatmap showing treatment timing across units, essential for
+    understanding staggered DID designs before estimation.
+
+    Args:
+        outcome_col: Outcome variable name
+        treatment_col: Treatment variable name
+        unit_col: Unit identifier name
+        time_col: Time variable name
+        output_path: Path to save the plot (PNG). If None, saves to temp file.
+        view_type: Type of visualization:
+            - "treat" (default): Treatment status heatmap
+            - "outcome": Outcome trajectories
+            - "bivariate": Combined treatment and outcome view
+        by_timing: Sort units by treatment timing (default: True)
+
+    Returns:
+        Summary of visualization with plot path
+
+    Reference:
+        Mou, H., Liu, L. & Xu, Y. (2023). "Panel Data Visualization in R
+        (panelView) and Stata (panelview)." Journal of Statistical Software.
+    """
+    try:
+        if get_analyzer().data is None:
+            return "No data loaded. Please load data first."
+
+        if not get_analyzer().r_estimators:
+            return "R integration not available. Please install rpy2 and required R packages."
+
+        # Auto-preprocess data (same logic as workflow)
+        processed = _preprocess_did_columns(unit_col, time_col, treatment_col)
+        actual_unit_col = processed["idname"]
+
+        # Create panelView visualization
+        result = get_analyzer().r_estimators.create_panel_view(
+            data=get_analyzer().data,
+            outcome_col=outcome_col,
+            treatment_col=treatment_col,
+            unit_col=actual_unit_col,
+            time_col=time_col,
+            output_path=output_path,
+            view_type=view_type,
+            by_timing=by_timing,
+        )
+
+        if result["status"] != "success":
+            return f"Error: {result.get('message', 'Unknown error')}"
+
+        # Format results
+        response = "# Panel Data Visualization (panelView)\n\n"
+        response += f"View Type: {result['view_type']}\n"
+        response += f"Plot Saved To: {result['plot_path']}\n\n"
+
+        response += "Data Summary\n\n"
+        response += f"- Units: {result['n_units']}\n"
+        response += f"- Time Periods: {result['n_periods']}\n\n"
+
+        if result.get("treatment_groups"):
+            response += "Treatment Timing Groups\n\n"
+            response += "| Treatment Time | Number of Units |\n"
+            response += "|---------------|----------------|\n"
+            for timing, count in sorted(
+                result["treatment_groups"].items(), key=lambda x: str(x[0])
+            ):
+                label = (
+                    "Never Treated"
+                    if timing == "never_treated"
+                    else f"First treated: {timing}"
+                )
+                response += f"| {label} | {count} |\n"
+            response += "\n"
+
+        response += "Usage Notes\n\n"
+        response += "- The heatmap shows treatment status (treated=dark, untreated=light) across units and time\n"
+        response += "- Units are sorted by treatment timing when by_timing=True\n"
+        response += "- Use view_type='outcome' to visualize outcome trajectories\n"
+        response += (
+            "- Use view_type='bivariate' for combined treatment and outcome view\n"
+        )
+
+        return response
+
+    except Exception as e:
+        logger.error(f"Error in panelView: {e}")
+        return f"Error: {str(e)}"
 
 
 # =============================================================================
 # VISUALIZATION TOOLS
 # =============================================================================
+
 
 @mcp.tool()
 async def create_event_study_plot(
@@ -2044,7 +2236,7 @@ async def create_event_study_plot(
     backend: str = "matplotlib",
     display_inline: bool = True,
     save_path: str = None,
-    auto_optimize: bool = True
+    auto_optimize: bool = True,
 ):
     """
     Create event study plot from DID estimation results.
@@ -2059,7 +2251,7 @@ async def create_event_study_plot(
             - "gardner_two_stage" - Gardner (2022) Two-Stage
             - "gsynth" - Generalized Synthetic Control (Xu 2017)
             - "synthdid" - Synthetic DID (Arkhangelsky et al. 2019)
-            - "efficient" - ⚠️ DISABLED (see KNOWN_ISSUES.md)
+            - "efficient" - DISABLED (see KNOWN_ISSUES.md)
         backend: Visualization backend ("matplotlib" or "plotly")
         display_inline: Whether to display image inline in Claude Desktop (default: True)
         save_path: Optional filename to save the plot
@@ -2098,29 +2290,29 @@ async def create_event_study_plot(
             backend=backend,
             save_path=save_path,
             display_mode=display_mode,
-            auto_optimize=auto_optimize
+            auto_optimize=auto_optimize,
         )
 
         # Handle error case
         if isinstance(result, dict) and result.get("status") == "error":
-            return f"❌ Error creating event study plot: {result['message']}"
+            return f"Error creating event study plot: {result['message']}"
 
         # If display_mode was "display", result is ImageContent directly
         # Check using type name to avoid import issues
-        if hasattr(result, '__class__') and result.__class__.__name__ == 'ImageContent':
+        if hasattr(result, "__class__") and result.__class__.__name__ == "ImageContent":
             return result
 
         # Otherwise result is a dict with metadata
         if not isinstance(result, dict):
-            return f"❌ Unexpected result type: {type(result)}"
+            return f"Unexpected result type: {type(result)}"
 
         # Create text description
         text_desc = f"""
-# 📊 Event Study Plot Created ✅
+# Event Study Plot Created
 
-**Method:** {result.get('method', 'Unknown')}
-**Backend:** {result['backend']}
-**File:** {result['file_path']}
+Method: {result.get("method", "Unknown")}
+Backend: {result["backend"]}
+File: {result["file_path"]}
 
 The event study plot has been generated and saved. The plot shows:
 - Point estimates for each event time
@@ -2130,7 +2322,7 @@ The event study plot has been generated and saved. The plot shows:
 """
 
         # Add optimization info if applicable
-        if result.get('optimized', False):
+        if result.get("optimized", False):
             text_desc += f"\n*Image was optimized for display (size: {result.get('file_size', 'unknown')} bytes)*"
 
         # If display_inline and image_content available, return both text and image
@@ -2138,22 +2330,24 @@ The event study plot has been generated and saved. The plot shows:
             if TextContent is not None:
                 return [
                     TextContent(type="text", text=text_desc),
-                    result["image_content"]
+                    result["image_content"],
                 ]
             else:
                 # Fallback: return text + warning
-                return text_desc + "\n\n⚠️ MCP types not available, image display disabled."
+                return (
+                    text_desc + "\n\nMCP types not available, image display disabled."
+                )
 
         # If display_inline but image too large
         if display_inline and not result.get("can_display_inline", True):
-            text_desc += "\n\n⚠️ **Image size exceeds 1MB limit.** Saved to file only."
+            text_desc += "\n\nImage size exceeds 1MB limit. Saved to file only."
 
         # Return text description only
         return text_desc
 
     except Exception as e:
         logger.error(f"Error in create_event_study_plot tool: {e}", exc_info=True)
-        return f"❌ Error: {str(e)}"
+        return f"Error: {str(e)}"
 
 
 @mcp.tool()
@@ -2169,67 +2363,68 @@ async def debug_analyzer_state() -> str:
     """
     analyzer_instance = get_analyzer()
 
-    response = "# 🔍 Analyzer State Debug Report\n\n"
-    response += f"**Analyzer Instance ID:** {id(analyzer_instance)}\n\n"
+    response = "# Analyzer State Debug Report\n\n"
+    response += f"Analyzer Instance ID: {id(analyzer_instance)}\n\n"
 
-    response += "## Data Status\n"
+    response += "Data Status\n"
     if analyzer_instance.data is not None:
-        response += f"- ✅ Data loaded: {analyzer_instance.data.shape[0]} rows × {analyzer_instance.data.shape[1]} columns\n\n"
+        response += f"- Data loaded: {analyzer_instance.data.shape[0]} rows × {analyzer_instance.data.shape[1]} columns\n\n"
     else:
-        response += "- ❌ No data loaded\n\n"
+        response += "- No data loaded\n\n"
 
-    response += "## Diagnostics Storage\n"
+    response += "Diagnostics Storage\n"
     if analyzer_instance.diagnostics:
-        response += f"- **Keys available:** {list(analyzer_instance.diagnostics.keys())}\n"
+        response += (
+            f"- Keys available: {list(analyzer_instance.diagnostics.keys())}\n"
+        )
         for key, value in analyzer_instance.diagnostics.items():
             if isinstance(value, dict):
-                response += f"- **{key}:** Dict with keys {list(value.keys())[:5]}...\n"
+                response += f"- {key}: Dict with keys {list(value.keys())[:5]}...\n"
             else:
-                response += f"- **{key}:** {type(value).__name__}\n"
+                response += f"- {key}: {type(value).__name__}\n"
     else:
-        response += "- ❌ No diagnostics stored (empty dict)\n"
+        response += "- No diagnostics stored (empty dict)\n"
     response += "\n"
 
-    response += "## Results Storage\n"
+    response += "Results Storage\n"
     if analyzer_instance.results:
-        response += f"- **Keys available:** {list(analyzer_instance.results.keys())}\n"
+        response += f"- Keys available: {list(analyzer_instance.results.keys())}\n"
     else:
-        response += "- ❌ No results stored (empty dict)\n"
+        response += "- No results stored (empty dict)\n"
 
     return response
 
 
 @mcp.tool()
 async def create_diagnostic_plots(
-    backend: str = "matplotlib",
-    save_path: str = None
+    backend: str = "matplotlib", save_path: str = None
 ) -> str:
     """
     Create diagnostic plots for TWFE bias analysis.
 
-    ⚠️ ⚠️ ⚠️ IMPORTANT - PREREQUISITES REQUIRED ⚠️ ⚠️ ⚠️
+    IMPORTANT - PREREQUISITES REQUIRED 
 
     This tool REQUIRES diagnostic analysis to be run FIRST. You MUST run at least
     one of the following diagnostic tools before calling this function:
 
-    **Required Steps (run BEFORE this tool):**
-    1. `diagnose_goodman_bacon()` - For Goodman-Bacon decomposition plots
+    Required Steps (run BEFORE this tool):
+    1. diagnose_goodman_bacon() - For Goodman-Bacon decomposition plots
        - Required parameters: formula, id_var, time_var
        - Example: diagnose_goodman_bacon(formula="lemp ~ treat", id_var="countyreal", time_var="year")
 
-    2. `analyze_twfe_weights()` - For TWFE negative weights plots
+    2. analyze_twfe_weights() - For TWFE negative weights plots
        - Required parameters: outcome_col, unit_col, time_col, treatment_col
        - Example: analyze_twfe_weights(outcome_col="lemp", unit_col="countyreal", time_col="year", treatment_col="treat")
 
-    **Complete Workflow:**
-    1. Load data: `load_data("path/to/data.csv")`
+    Complete Workflow:
+    1. Load data: load_data("path/to/data.csv")
     2. Run diagnostics (one or both):
-       - `diagnose_goodman_bacon(formula="outcome ~ treatment", id_var="unit_id", time_var="time_id")`
-       - `analyze_twfe_weights(outcome_col="outcome", unit_col="unit_id", time_col="time_id", treatment_col="treatment")`
-    3. Create plots: `create_diagnostic_plots()` ← You are here
+       - diagnose_goodman_bacon(formula="outcome ~ treatment", id_var="unit_id", time_var="time_id")
+       - analyze_twfe_weights(outcome_col="outcome", unit_col="unit_id", time_col="time_id", treatment_col="treatment")
+    3. Create plots: create_diagnostic_plots() ← You are here
 
-    **Troubleshooting:**
-    - If you get "No diagnostic results available", use `debug_analyzer_state()` to check what's stored
+    Troubleshooting:
+    - If you get "No diagnostic results available", use debug_analyzer_state() to check what's stored
     - Make sure you didn't restart the MCP server between running diagnostics and creating plots
 
     Args:
@@ -2241,96 +2436,99 @@ async def create_diagnostic_plots(
     """
     try:
         analyzer_instance = get_analyzer()
-        logger.info(f"create_diagnostic_plots called. Analyzer instance ID: {id(analyzer_instance)}")
-        logger.info(f"Available diagnostics keys: {list(analyzer_instance.diagnostics.keys())}")
+        logger.info(
+            f"create_diagnostic_plots called. Analyzer instance ID: {id(analyzer_instance)}"
+        )
+        logger.info(
+            f"Available diagnostics keys: {list(analyzer_instance.diagnostics.keys())}"
+        )
         logger.info(f"Diagnostics content: {analyzer_instance.diagnostics}")
 
         result = await analyzer_instance.create_diagnostic_plots(
-            backend=backend,
-            save_path=save_path
+            backend=backend, save_path=save_path
         )
 
         if result["status"] == "success":
             plots_info = []
             for plot_type, plot_data in result["plots"].items():
                 if plot_data["status"] == "success":
-                    plots_info.append(f"- **{plot_type.replace('_', ' ').title()}**: {plot_data['file_path']}")
+                    plots_info.append(
+                        f"- {plot_type.replace('_', ' ').title()}: {plot_data['file_path']}"
+                    )
 
             return f"""
-# 🔍 Diagnostic Plots Created ✅
+# Diagnostic Plots Created
 
-**Backend:** {backend}
-**Number of plots:** {result['n_plots']}
+Backend: {backend}
+Number of plots: {result["n_plots"]}
 
-**Generated plots:**
+Generated plots:
 {chr(10).join(plots_info)}
 
 These diagnostic plots help identify potential TWFE bias:
-- **Goodman-Bacon Decomposition**: Shows weight distribution across comparison types
-- **TWFE Weights Analysis**: Identifies negative weights and their impact
+- Goodman-Bacon Decomposition: Shows weight distribution across comparison types
+- TWFE Weights Analysis: Identifies negative weights and their impact
 
 All plots have been saved to the figures directory.
 """
         else:
             # Enhanced error message with actionable suggestions
-            error_msg = result['message']
+            error_msg = result["message"]
 
             # Check what's available
             available_diag = list(analyzer_instance.diagnostics.keys())
 
-            return f"""❌ **Error:** Cannot create diagnostic plots - {error_msg}
+            return f"""Error: Cannot create diagnostic plots - {error_msg}
 
-📊 **Current Status:**
+Current Status:
 - Available diagnostic results: {available_diag if available_diag else "None"}
 - You need at least one diagnostic analysis to create plots
 
-⚠️ **REQUIRED: Run diagnostic analysis FIRST**
+REQUIRED: Run diagnostic analysis FIRST
 
-**Step-by-Step Instructions:**
+Step-by-Step Instructions:
 
-1️⃣ **Check current state** (optional but recommended):
-   ```
+1️⃣ Check current state (optional but recommended):
+   
    debug_analyzer_state()
-   ```
+   
 
-2️⃣ **Run diagnostic analysis** (choose at least one):
+2️⃣ Run diagnostic analysis (choose at least one):
 
-   **Option A - Goodman-Bacon Decomposition:**
-   ```
+   Option A - Goodman-Bacon Decomposition:
+   
    diagnose_goodman_bacon(
        formula="lemp ~ treat",        # Replace with your outcome ~ treatment
        id_var="countyreal",            # Replace with your unit ID column
        time_var="year"                 # Replace with your time column
    )
-   ```
+   
 
-   **Option B - TWFE Weights Analysis:**
-   ```
+   Option B - TWFE Weights Analysis:
+   
    analyze_twfe_weights(
        outcome_col="lemp",             # Replace with your outcome variable
        unit_col="countyreal",          # Replace with your unit ID column
        time_col="year",                # Replace with your time column
        treatment_col="treat"           # Replace with your treatment variable
    )
-   ```
+   
 
-3️⃣ **Then retry:**
-   ```
+3️⃣ Then retry:
+   
    create_diagnostic_plots()
-   ```
+   
 
-💡 **Tip:** Run BOTH diagnostics for a comprehensive analysis!
+Tip: Run BOTH diagnostics for a comprehensive analysis!
 """
 
     except Exception as e:
-        return f"❌ Error: {str(e)}"
+        return f"Error: {str(e)}"
 
 
 @mcp.tool()
 async def create_comprehensive_report(
-    results_key: str = "latest",
-    backend: str = "matplotlib",
-    save_path: str = None
+    results_key: str = "latest", backend: str = "matplotlib", save_path: str = None
 ) -> str:
     """
     Create comprehensive DID analysis report with all visualizations.
@@ -2342,34 +2540,32 @@ async def create_comprehensive_report(
     """
     try:
         result = await get_analyzer().create_comprehensive_report(
-            results_key=results_key,
-            backend=backend,
-            save_path=save_path
+            results_key=results_key, backend=backend, save_path=save_path
         )
 
         if result["status"] == "success":
             return f"""
-# 📋 Comprehensive DID Report Created ✅
+# Comprehensive DID Report Created
 
-**Report Type:** {result['report_type']}
-**Number of plots:** {result['n_plots']}
-**Report file:** {result['report_path']}
+Report Type: {result["report_type"]}
+Number of plots: {result["n_plots"]}
+Report file: {result["report_path"]}
 
 The comprehensive report includes:
-- **Executive Summary**: Key findings and recommendations
-- **Estimation Results**: Detailed results from your chosen method
-- **Diagnostic Analysis**: TWFE bias assessment
-- **Event Study Plot**: Treatment effects over time
-- **Diagnostic Plots**: Goodman-Bacon decomposition and weights analysis
+- Executive Summary: Key findings and recommendations
+- Estimation Results: Detailed results from your chosen method
+- Diagnostic Analysis: TWFE bias assessment
+- Event Study Plot: Treatment effects over time
+- Diagnostic Plots: Goodman-Bacon decomposition and weights analysis
 
 This report is ready for presentation to stakeholders or inclusion in research papers.
 The HTML report can be opened in any web browser for interactive viewing.
 """
         else:
-            return f"❌ Error creating comprehensive report: {result['message']}"
+            return f"Error creating comprehensive report: {result['message']}"
 
     except Exception as e:
-        return f"❌ Error: {str(e)}"
+        return f"Error: {str(e)}"
 
 
 @mcp.tool()
@@ -2379,110 +2575,118 @@ async def get_visualization_info() -> str:
         backends = get_analyzer().get_visualization_backends()
 
         return f"""
-# 🎨 Visualization Capabilities
+# Visualization Capabilities
 
-**Available backends:**
-{chr(10).join([f'- {backend}' for backend in backends])}
+Available backends:
+{chr(10).join([f"- {backend}" for backend in backends])}
 
-**Supported plot types:**
-- **Event Study Plots**: Treatment effects over time with confidence intervals
-- **Goodman-Bacon Decomposition**: Weight distribution across comparison types
-- **TWFE Weights Analysis**: Negative weights detection and visualization
-- **Comprehensive Reports**: Combined HTML reports with all plots
+Supported plot types:
+- Event Study Plots: Treatment effects over time with confidence intervals
+- Goodman-Bacon Decomposition: Weight distribution across comparison types
+- TWFE Weights Analysis: Negative weights detection and visualization
+- Comprehensive Reports: Combined HTML reports with all plots
 
-**Output formats:**
+Output formats:
 - PNG images (high resolution)
 - HTML interactive plots (Plotly)
 - Base64 encoded images (for embedding)
 - Comprehensive HTML reports
 
-**Usage workflow:**
-1. **Load data**: `load_data` with your dataset
-2. **Run estimation**: `estimate_callaway_santanna` or other methods
-3. **Run diagnostics**: `diagnose_twfe` for bias analysis
-4. **Create plots**: Use visualization tools to generate publication-ready figures
-5. **Generate reports**: Create comprehensive reports for presentations
+Usage workflow:
+1. Load data: load_data with your dataset
+2. Run estimation: estimate_callaway_santanna or other methods
+3. Run diagnostics: diagnose_twfe for bias analysis
+4. Create plots: Use visualization tools to generate publication-ready figures
+5. Generate reports: Create comprehensive reports for presentations
 
-All plots are automatically saved to the `figures/` directory.
+All plots are automatically saved to the figures/ directory.
 """
 
     except Exception as e:
-        return f"❌ Error: {str(e)}"
+        return f"Error: {str(e)}"
 
 
 @mcp.tool()
 async def manage_storage(
-    action: str = "stats",
-    cleanup_old: bool = False,
-    enforce_limits: bool = False
+    action: str = "stats", cleanup_old: bool = False, enforce_limits: bool = False
 ) -> str:
     """
     Manage output file storage.
-    
+
     Args:
         action: Action to perform ("stats", "cleanup", "list")
         cleanup_old: Remove files older than retention period
         enforce_limits: Enforce maximum file count limits
-    
+
     Returns:
         Storage management report
     """
     try:
         storage = get_storage()
-        
+
         if action == "stats":
             stats = storage.get_storage_stats()
             return f"""
-# 📊 Storage Statistics
+# Storage Statistics
 
-**Base Directory:** {stats['base_directory']}
-**Total Files:** {stats['total_files']}
-**Total Size:** {stats['total_size_formatted']}
-
-## By Type:
-{chr(10).join([f"- **{k}**: {v['count']} files ({storage._format_size(v['size'])})" 
-               for k, v in stats['by_type'].items()])}
-
-## Management Options:
-- Use `cleanup_old=True` to remove files older than {storage.cleanup_after_days} days
-- Use `enforce_limits=True` to limit to {storage.max_files_per_type} files per type
+Base Directory: {stats["base_directory"]}
+Total Files: {stats["total_files"]}
+Total Size: {stats["total_size_formatted"]}
+ By Type:
+{
+                chr(10).join(
+                    [
+                        f"- {k}: {v['count']} files ({storage._format_size(v['size'])})"
+                        for k, v in stats["by_type"].items()
+                    ]
+                )
+            }
+ Management Options:
+- Use cleanup_old=True to remove files older than {storage.cleanup_after_days} days
+- Use enforce_limits=True to limit to {storage.max_files_per_type} files per type
 """
-        
+
         elif action == "cleanup":
             removed_count = 0
             if cleanup_old:
                 removed_count += storage.cleanup_old_files()
             if enforce_limits:
                 removed_count += storage.enforce_storage_limits()
-            
-            return f"""
-# 🧹 Storage Cleanup Complete
 
-**Files Removed:** {removed_count}
+            return f"""
+# Storage Cleanup Complete
+
+Files Removed: {removed_count}
 
 The storage has been cleaned according to your settings.
-Run with `action="stats"` to see the current storage status.
+Run with action="stats" to see the current storage status.
 """
-        
+
         elif action == "list":
             resources = storage.list_resources()[:10]  # Show first 10
             return f"""
-# 📁 Recent Output Files
+# Recent Output Files
 
-{chr(10).join([f"- **{r['name']}** ({r['mimeType']}): {storage._format_size(r.get('size', 0))}"
-               for r in resources])}
+{
+                chr(10).join(
+                    [
+                        f"- {r['name']} ({r['mimeType']}): {storage._format_size(r.get('size', 0))}"
+                        for r in resources
+                    ]
+                )
+            }
 
 Total available: {len(storage.list_resources())} files
 
 Use MCP resource listing to access all files programmatically.
 """
-        
+
         else:
-            return f"❌ Unknown action: {action}. Use 'stats', 'cleanup', or 'list'"
-    
+            return f"Unknown action: {action}. Use 'stats', 'cleanup', or 'list'"
+
     except Exception as e:
         logger.error(f"Error in storage management: {e}")
-        return f"❌ Error: {str(e)}"
+        return f"Error: {str(e)}"
 
 
 @mcp.tool()
@@ -2490,7 +2694,7 @@ async def export_results(
     format: str = "csv",
     results_key: str = "latest",
     filename: Optional[str] = None,
-    include_diagnostics: bool = False
+    include_diagnostics: bool = False,
 ) -> str:
     """
     Export DID analysis results to various formats.
@@ -2507,7 +2711,7 @@ async def export_results(
         results_key: Which results to export. Options:
             - "latest" - Most recently run method (default, recommended)
 
-            **Naming Convention:**
+            Naming Convention:
             - Methods called directly: Use method name without prefix
               - "callaway_santanna" - Callaway & Sant'Anna (2021)
               - "sun_abraham" - Sun & Abraham (2021)
@@ -2516,17 +2720,15 @@ async def export_results(
               - "gardner_two_stage" - Gardner (2022) Two-Stage
               - "gsynth" - Generalized Synthetic Control (Xu 2017)
               - "synthdid" - Synthetic DID (Arkhangelsky et al. 2019)
-              - "efficient" - ⚠️ DISABLED (see KNOWN_ISSUES.md)
+              - "efficient" - DISABLED (see KNOWN_ISSUES.md)
 
             - Methods called via workflow(): Use "workflow_" prefix
               - "workflow_callaway_santanna"
               - "workflow_sun_abraham"
               - "workflow_imputation_bjs"
-              - "workflow_efficient"
               - etc.
 
-            **Tip:** Use "latest" to always export the most recent results,
-            regardless of how the method was called.
+            Tip: Use "latest" to export the primary estimation results.
 
         filename: Custom filename (optional, auto-generated if not provided)
         include_diagnostics: Whether to include diagnostic information (default: False)
@@ -2542,14 +2744,14 @@ async def export_results(
         >>> export_results("latex", "callaway_santanna", "my_results.tex")
 
         >>> # Export results from workflow call
-        >>> export_results("markdown", "workflow_efficient")
+        >>> export_results("markdown", "workflow_callaway_santanna")
 
         >>> # Export with diagnostics
         >>> export_results("markdown", "sun_abraham", include_diagnostics=True)
     """
     try:
         analyzer = get_analyzer()
-        
+
         # Get results to export
         if results_key == "latest":
             results = analyzer.results.get("latest", {})
@@ -2565,28 +2767,31 @@ async def export_results(
 
         if not results:
             # Provide helpful error with available keys
-            available_keys = [k for k in analyzer.results.keys()
-                            if k not in ["latest", "diagnostics", "workflow"]]
+            available_keys = [
+                k
+                for k in analyzer.results.keys()
+                if k not in ["latest", "diagnostics", "workflow"]
+            ]
             if not available_keys:
-                return "❌ **Error:** No results found to export. Please run a DID estimation method first."
+                return "Error: No results found to export. Please run a DID estimation method first."
             else:
                 keys_str = "', '".join(available_keys)
                 if results_key == "latest":
-                    return f"❌ **Error:** No results available. Please run a DID estimation method first."
+                    return f"Error: No results available. Please run a DID estimation method first."
                 else:
-                    return f"""❌ **Error:** Results key '{results_key}' not found.
+                    return f"""Error: Results key '{results_key}' not found.
 
-**Available results keys:**
+Available results keys:
 - '{keys_str}'
 
-**Tip:** Use `results_key="latest"` for the most recent results, or specify one of the available keys above.
+Tip: Use results_key="latest" for the primary estimation results, or specify one of the available keys above.
 """
-        
+
         # Include diagnostics if requested
         export_data = {"results": results}
         if include_diagnostics and "diagnostics" in analyzer.results:
             export_data["diagnostics"] = analyzer.results["diagnostics"]
-        
+
         # Format content based on export format
         if format == "csv":
             content = _format_results_as_csv(export_data)
@@ -2604,17 +2809,18 @@ async def export_results(
             content = json.dumps(export_data, indent=2, default=str)
             extension = "json"
         else:
-            return f"❌ **Error:** Unsupported format '{format}'. Use: csv, excel, latex, markdown, or json"
-        
+            return f"Error: Unsupported format '{format}'. Use: csv, excel, latex, markdown, or json"
+
         # Prepare filename
         if not filename:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"did_results_{results_key}_{timestamp}.{extension}"
         elif not filename.endswith(f".{extension}"):
             filename = f"{filename}.{extension}"
-        
+
         # Save file using storage manager
         from pathlib import Path
+
         storage = get_storage()
         file_path = storage.base_dir / "exports" / filename
 
@@ -2629,48 +2835,53 @@ async def export_results(
         if format == "excel":
             # Excel requires special handling
             import pandas as pd
-            with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+
+            with pd.ExcelWriter(file_path, engine="openpyxl") as writer:
                 # Write main results
                 if "event_study" in results:
                     df = pd.DataFrame(results["event_study"]).T
-                    df.to_excel(writer, sheet_name='Event Study')
+                    df.to_excel(writer, sheet_name="Event Study")
                 if "overall_att" in results:
                     df = pd.DataFrame([results["overall_att"]])
-                    df.to_excel(writer, sheet_name='Overall ATT')
+                    df.to_excel(writer, sheet_name="Overall ATT")
                 if include_diagnostics and "diagnostics" in export_data:
                     # Add diagnostics sheet
                     diag_data = export_data["diagnostics"]
                     if isinstance(diag_data, dict):
                         df = pd.DataFrame([diag_data])
-                        df.to_excel(writer, sheet_name='Diagnostics')
+                        df.to_excel(writer, sheet_name="Diagnostics")
         else:
             # Text-based formats
-            with open(file_path, 'w', encoding='utf-8') as f:
+            with open(file_path, "w", encoding="utf-8") as f:
                 f.write(content)
 
         # Verify file was written successfully
         if not file_path.exists():
-            raise FileNotFoundError(f"File write reported success but file not found: {file_path}")
+            raise FileNotFoundError(
+                f"File write reported success but file not found: {file_path}"
+            )
 
         file_size = file_path.stat().st_size
         logger.info(f"File written successfully: {file_path} ({file_size:,} bytes)")
 
         # Generate success message
-        response = f"## ✅ Results Exported Successfully\n\n"
-        response += f"**File:** `{file_path}`\n"
-        response += f"**Format:** {format.upper()}\n"
-        response += f"**Method:** {results_key}\n"
-        response += f"**Size:** {file_size:,} bytes\n\n"
-        
-        response += "### Next Steps:\n\n"
+        response = f"Results Exported Successfully\n\n"
+        response += f"File: {file_path}\n"
+        response += f"Format: {format.upper()}\n"
+        response += f"Method: {results_key}\n"
+        response += f"Size: {file_size:,} bytes\n\n"
+
+        response += "Next Steps:\n\n"
         if format == "csv":
             response += "- Open in Excel, R, or Stata for further analysis\n"
-            response += "- Import into statistical software using standard CSV readers\n"
+            response += (
+                "- Import into statistical software using standard CSV readers\n"
+            )
         elif format == "excel":
             response += "- Open in Excel for viewing and editing\n"
             response += "- Use multiple sheets for different result components\n"
         elif format == "latex":
-            response += "- Include in your LaTeX document using `\\input{}`\n"
+            response += "- Include in your LaTeX document using \\input{}\n"
             response += "- Tables are publication-ready with standard formatting\n"
         elif format == "markdown":
             response += "- View in any markdown reader\n"
@@ -2678,12 +2889,12 @@ async def export_results(
         elif format == "json":
             response += "- Use for programmatic access\n"
             response += "- Archive for reproducibility\n"
-        
+
         return response
-        
+
     except Exception as e:
         logger.error(f"Error in export_results: {e}")
-        return f"❌ **Error:** {str(e)}"
+        return f"Error: {str(e)}"
 
 
 @mcp.tool()
@@ -2691,7 +2902,7 @@ async def export_comparison(
     methods: Optional[List[str]] = None,
     format: str = "markdown",
     filename: Optional[str] = None,
-    include_diagnostics: bool = False
+    include_diagnostics: bool = False,
 ) -> str:
     """
     Export comparison of multiple DID estimation methods.
@@ -2704,7 +2915,7 @@ async def export_comparison(
             - None (default) - Compare all available methods
             - List of specific method keys
 
-            **Naming Convention:**
+            Naming Convention:
             - Methods called directly: Use method name without prefix
               - "callaway_santanna" - Callaway & Sant'Anna (2021)
               - "sun_abraham" - Sun & Abraham (2021)
@@ -2713,16 +2924,15 @@ async def export_comparison(
               - "gardner_two_stage" - Gardner (2022) Two-Stage
               - "gsynth" - Generalized Synthetic Control (Xu 2017)
               - "synthdid" - Synthetic DID (Arkhangelsky et al. 2019)
-              - "efficient" - ⚠️ DISABLED (see KNOWN_ISSUES.md)
+              - "efficient" - DISABLED (see KNOWN_ISSUES.md)
 
             - Methods called via workflow(): Use "workflow_" prefix
               - "workflow_callaway_santanna"
               - "workflow_sun_abraham"
               - "workflow_imputation_bjs"
-              - "workflow_efficient"
               - etc.
 
-            **Tip:** Set methods=None to automatically compare all available results.
+            Tip: Set methods=None to automatically compare all available results.
 
         format: Export format ("markdown", "latex", "csv", "json")
         filename: Custom filename (optional, auto-generated if not provided)
@@ -2750,7 +2960,7 @@ async def export_comparison(
 
         >>> # Mix of direct and workflow results
         >>> export_comparison(
-        ...     methods=["callaway_santanna", "workflow_efficient"]
+        ...     methods=["callaway_santanna", "workflow_sun_abraham"]
         ... )
     """
     try:
@@ -2759,11 +2969,14 @@ async def export_comparison(
         # Get list of methods to compare
         if methods is None:
             # Get all available methods (excluding 'latest' and internal keys)
-            methods = [k for k in analyzer.results.keys()
-                      if k not in ["latest", "diagnostics", "workflow"]]
+            methods = [
+                k
+                for k in analyzer.results.keys()
+                if k not in ["latest", "diagnostics", "workflow"]
+            ]
 
         if not methods:
-            return "❌ **Error:** No estimation results available. Please run at least one DID estimation method first."
+            return "Error: No estimation results available. Please run at least one DID estimation method first."
 
         # Collect results for each method
         comparison_data = {}
@@ -2774,19 +2987,24 @@ async def export_comparison(
                 logger.warning(f"Method '{method_key}' not found in results, skipping")
 
         if not comparison_data:
-            available_keys = [k for k in analyzer.results.keys()
-                            if k not in ["latest", "diagnostics", "workflow"]]
-            return f"""❌ **Error:** None of the specified methods found.
+            available_keys = [
+                k
+                for k in analyzer.results.keys()
+                if k not in ["latest", "diagnostics", "workflow"]
+            ]
+            return f"""Error: None of the specified methods found.
 
-**Available methods:**
+Available methods:
 {chr(10).join([f"- {k}" for k in available_keys])}
 
-**Tip:** Use `methods=None` to export all available methods.
+Tip: Use methods=None to export all available methods.
 """
 
         # Format comparison table based on format
         if format == "markdown":
-            content = _format_comparison_as_markdown(comparison_data, include_diagnostics)
+            content = _format_comparison_as_markdown(
+                comparison_data, include_diagnostics
+            )
             extension = "md"
         elif format == "latex":
             content = _format_comparison_as_latex(comparison_data, include_diagnostics)
@@ -2798,17 +3016,20 @@ async def export_comparison(
             content = json.dumps(comparison_data, indent=2, default=str)
             extension = "json"
         else:
-            return f"❌ **Error:** Unsupported format '{format}'. Use: markdown, latex, csv, or json"
+            return f"Error: Unsupported format '{format}'. Use: markdown, latex, csv, or json"
 
         # Prepare filename
         if not filename:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"did_comparison_{len(comparison_data)}methods_{timestamp}.{extension}"
+            filename = (
+                f"did_comparison_{len(comparison_data)}methods_{timestamp}.{extension}"
+            )
         elif not filename.endswith(f".{extension}"):
             filename = f"{filename}.{extension}"
 
         # Save file
         from pathlib import Path
+
         storage = get_storage()
         file_path = storage.base_dir / "exports" / filename
 
@@ -2819,37 +3040,39 @@ async def export_comparison(
         logger.info(f"Exporting comparison to: {file_path}")
         logger.info(f"Storage base directory: {storage.base_dir.resolve()}")
 
-        with open(file_path, 'w', encoding='utf-8') as f:
+        with open(file_path, "w", encoding="utf-8") as f:
             f.write(content)
 
         # Verify file was written successfully
         if not file_path.exists():
-            raise FileNotFoundError(f"File write reported success but file not found: {file_path}")
+            raise FileNotFoundError(
+                f"File write reported success but file not found: {file_path}"
+            )
 
         file_size = file_path.stat().st_size
         logger.info(f"File written successfully: {file_path} ({file_size:,} bytes)")
 
         # Generate success message
-        response = f"## ✅ Method Comparison Exported Successfully\n\n"
-        response += f"**File:** `{file_path}`\n"
-        response += f"**Format:** {format.upper()}\n"
-        response += f"**Methods Compared:** {len(comparison_data)}\n"
-        response += f"**Method List:** {', '.join(comparison_data.keys())}\n"
-        response += f"**Size:** {file_size:,} bytes\n\n"
+        response = f"Method Comparison Exported Successfully\n\n"
+        response += f"File: {file_path}\n"
+        response += f"Format: {format.upper()}\n"
+        response += f"Methods Compared: {len(comparison_data)}\n"
+        response += f"Method List: {', '.join(comparison_data.keys())}\n"
+        response += f"Size: {file_size:,} bytes\n\n"
 
-        response += "### Comparison Includes:\n\n"
-        response += "- **Overall ATT** estimates with standard errors and confidence intervals\n"
-        response += "- **Event study** estimates for all periods\n"
-        response += "- **Statistical significance** indicators\n"
+        response += "Comparison Includes:\n\n"
+        response += "- Overall ATT estimates with standard errors and confidence intervals\n"
+        response += "- Event study estimates for all periods\n"
+        response += "- Statistical significance indicators\n"
         if include_diagnostics:
-            response += "- **Diagnostic** information (if available)\n"
+            response += "- Diagnostic information (if available)\n"
 
-        response += "\n### Next Steps:\n\n"
+        response += "\nNext Steps:\n\n"
         if format == "markdown":
             response += "- View comparison table in any markdown reader\n"
             response += "- Convert to presentation slides or HTML\n"
         elif format == "latex":
-            response += "- Include in your paper with `\\input{}`\n"
+            response += "- Include in your paper with \\input{}\n"
             response += "- Publication-ready comparison table\n"
         elif format == "csv":
             response += "- Analyze in Excel, R, or Stata\n"
@@ -2862,12 +3085,13 @@ async def export_comparison(
 
     except Exception as e:
         logger.error(f"Error in export_comparison: {e}")
-        return f"❌ **Error:** {str(e)}"
+        return f"Error: {str(e)}"
 
 
 # =============================================================================
 # SENSITIVITY ANALYSIS TOOLS
 # =============================================================================
+
 
 @mcp.tool()
 async def sensitivity_analysis(
@@ -2876,7 +3100,7 @@ async def sensitivity_analysis(
     m_values: Optional[Union[List[float], str]] = None,
     event_time: int = 0,
     confidence_level: float = 0.95,
-    estimator_method: str = "callaway_santanna"
+    estimator_method: str = "callaway_santanna",
 ) -> str:
     """
     Conduct HonestDiD sensitivity analysis for parallel trends assumption.
@@ -2903,141 +3127,149 @@ async def sensitivity_analysis(
             m_values=m_values,
             event_time=event_time,
             confidence_level=confidence_level,
-            estimator_method=estimator_method
+            estimator_method=estimator_method,
         )
         # Extract validated values
         m_values = params.m_values
         method = params.method
         confidence_level = params.confidence_level
     except Exception as e:
-        return f"""❌ **Parameter validation error:**
+        return f"""Parameter validation error:
 
 {str(e)}
 
-**Note:** For `m_values` parameter, you can use:
-- JSON array: `[0.5, 1.0, 1.5, 2.0]`
-- String representation: `"[0.5, 1.0, 1.5, 2.0]"`
+Note: For m_values parameter, you can use:
+- JSON array: [0.5, 1.0, 1.5, 2.0]
+- String representation: "[0.5, 1.0, 1.5, 2.0]"
 - Or omit it to use default values: [0.5, 1.0, 1.5, 2.0]
 
-**Example:**
-```python
+Example:
+
 sensitivity_analysis(
     method="relative_magnitude",
     m_values=[0.5, 1.0, 1.5, 2.0],  # Or "[0.5, 1.0, 1.5, 2.0]"
     estimator_method="callaway_santanna"
 )
-```
+
 """
 
     try:
         # Use the server's analyzer instance directly
         analyzer = get_analyzer()
-        
+
         if analyzer.data is None:
-            return "❌ **Error:** No data loaded. Please load data first using `load_data`."
-        
+            return "Error: No data loaded. Please load data first using load_data."
+
         if not analyzer.results:
-            return "❌ **Error:** No estimation results available. Please run an estimator first."
-        
+            return "Error: No estimation results available. Please run an estimator first."
+
         # Get latest results
-        latest_results = analyzer.results.get("latest", list(analyzer.results.values())[-1] if analyzer.results else None)
-        
+        latest_results = analyzer.results.get(
+            "latest", list(analyzer.results.values())[-1] if analyzer.results else None
+        )
+
         if not latest_results:
-            return "❌ **Error:** No valid estimation results found."
-        
+            return "Error: No valid estimation results found."
+
         # Run sensitivity analysis using analyzer's r_estimators
         if not analyzer.r_estimators:
-            return "❌ **Error:** R integration not available."
-        
+            return "Error: R integration not available."
+
         # Extract event study data
         event_study = latest_results.get("event_study", {})
         if not event_study:
-            return "❌ **Error:** No event study results available for sensitivity analysis."
-        
+            return "Error: No event study results available for sensitivity analysis."
+
         # Prepare data for HonestDiD
         sorted_times = sorted(event_study.keys())
-        pre_periods = [t for t in sorted_times if t < 0 and t != -1]  # Exclude reference period
+        pre_periods = [
+            t for t in sorted_times if t < 0 and t != -1
+        ]  # Exclude reference period
         post_periods = [t for t in sorted_times if t >= 0]
-        
+
         # Check if we have sufficient pre-periods for sensitivity analysis
         if len(pre_periods) == 0:
             # Check if this is Efficient Estimator
             method_name = latest_results.get("method", "Unknown")
             if "Efficient" in method_name:
-                return """❌ **Cannot perform HonestDiD sensitivity analysis with Efficient Estimator:**
+                return """Cannot perform HonestDiD sensitivity analysis with Efficient Estimator:
 
-**Issue:** The staggered R package's Efficient Estimator only returns overall ATT by default, without event study estimates for individual time periods.
+Issue: The staggered R package's Efficient Estimator only returns overall ATT by default, without event study estimates for individual time periods.
 
-**Why:** The staggered package has a bug in its `eventstudy` mode that prevents extraction of multiple time periods (verified in testing).
+Why: The staggered package has a bug in its eventstudy mode that prevents extraction of multiple time periods (verified in testing).
 
-**Solution:** Use an alternative estimator that provides full event study results:
+Solution: Use an alternative estimator that provides full event study results:
 
-1. **Callaway & Sant'Anna (2021)** ✅ RECOMMENDED
-   ```python
+1. Callaway & Sant'Anna (2021) RECOMMENDED
+   
    estimate_callaway_santanna(yname="lemp", tname="year", idname="countyreal", gname="first.treat")
    sensitivity_analysis(estimator_method="callaway_santanna")
-   ```
+   
 
-2. **Sun & Abraham (2021)** ✅ ALTERNATIVE
-   ```python
+2. Sun & Abraham (2021) ALTERNATIVE
+   
    estimate_sun_abraham(formula="lemp ~ sunab(first.treat, year) | countyreal + year")
    sensitivity_analysis(estimator_method="sun_abraham")
-   ```
+   
 
 Both methods provide full event study estimates and are fully compatible with HonestDiD sensitivity analysis.
 
-**Note:** This is a known limitation of the staggered R package (v1.2.2), not our implementation.
+Note: This is a known limitation of the staggered R package (v1.2.2), not our implementation.
 """
             else:
-                return """❌ **Cannot perform HonestDiD sensitivity analysis:**
+                return """Cannot perform HonestDiD sensitivity analysis:
 
 HonestDiD requires pre-treatment periods (excluding the reference period -1) to test the parallel trends assumption.
 
-**Current data:**
+Current data:
 - Pre-treatment periods (excluding -1): None found
 - Post-treatment periods: {0}
 
-**Recommendation:**
+Recommendation:
 - Ensure your data includes at least 2-3 pre-treatment periods before the treatment
 - Run an estimator that provides event study estimates for periods before -1
 - Try Callaway & Sant'Anna or Sun & Abraham methods which always provide full event studies
 """.format(len(post_periods))
-        
+
         elif len(pre_periods) == 1:
-            logger.warning("Only 1 pre-treatment period available for HonestDiD. Results may be less reliable.")
-        
+            logger.warning(
+                "Only 1 pre-treatment period available for HonestDiD. Results may be less reliable."
+            )
+
         # Extract coefficients (excluding reference period)
         betahat = []
         used_periods = []
-        
+
         for t in pre_periods:
             betahat.append(event_study[t]["estimate"])
             used_periods.append(t)
         for t in post_periods:
             betahat.append(event_study[t]["estimate"])
             used_periods.append(t)
-        
+
         betahat = np.array(betahat)
-        
+
         # Extract variance-covariance matrix
         if "event_study_vcov" in latest_results:
             vcov_info = latest_results["event_study_vcov"]
             full_sigma = np.array(vcov_info["matrix"])
             vcov_periods = vcov_info["periods"]
             period_to_idx = {p: i for i, p in enumerate(vcov_periods)}
-            used_indices = [period_to_idx[t] for t in used_periods if t in period_to_idx]
-            
+            used_indices = [
+                period_to_idx[t] for t in used_periods if t in period_to_idx
+            ]
+
             if len(used_indices) == len(used_periods):
                 sigma = full_sigma[np.ix_(used_indices, used_indices)]
             else:
                 sigma = np.diag([event_study[t]["se"] ** 2 for t in used_periods])
         else:
             sigma = np.diag([event_study[t]["se"] ** 2 for t in used_periods])
-        
+
         # Default M values if not provided
         if m_values is None:
             m_values = [0.5, 1.0, 1.5, 2.0]
-        
+
         # Run HonestDiD sensitivity analysis
         sensitivity_result = analyzer.r_estimators.honest_did_sensitivity_analysis(
             betahat=betahat,
@@ -3046,34 +3278,40 @@ HonestDiD requires pre-treatment periods (excluding the reference period -1) to 
             num_post_periods=len(post_periods),
             method=method,
             m_values=m_values,
-            confidence_level=confidence_level
+            confidence_level=confidence_level,
         )
-        
+
         if sensitivity_result["status"] != "success":
-            return f"❌ **Error in sensitivity analysis:** {sensitivity_result.get('message', 'Unknown error')}"
-        
+            return f"Error in sensitivity analysis: {sensitivity_result.get('message', 'Unknown error')}"
+
         # Format results
-        method_desc = "Smoothness Restrictions" if method == "smoothness" else "Relative Magnitude"
-        
+        method_desc = (
+            "Smoothness Restrictions"
+            if method == "smoothness"
+            else "Relative Magnitude"
+        )
+
         result_text = f"""
-# HonestDiD Sensitivity Analysis Results 📊
+# HonestDiD Sensitivity Analysis Results
 
-**Method:** {method_desc}
-**Confidence Level:** {confidence_level*100:.0f}%
-**Base Estimator:** {estimator_method}
-
-## Robust Confidence Intervals for Period {event_time}
+Method: {method_desc}
+Confidence Level: {confidence_level * 100:.0f}%
+Base Estimator: {estimator_method}
+ Robust Confidence Intervals for Period {event_time}
 
 """
 
         # Show original confidence interval first
         if "original_ci" in sensitivity_result and sensitivity_result["original_ci"]:
             orig_ci = sensitivity_result["original_ci"]
-            if orig_ci.get("ci_lower") is not None and orig_ci.get("ci_upper") is not None:
+            if (
+                orig_ci.get("ci_lower") is not None
+                and orig_ci.get("ci_upper") is not None
+            ):
                 result_text += f"""
-### Original Estimate (No Violations Assumed)
-- **95% CI:** [{orig_ci['ci_lower']:.4f}, {orig_ci['ci_upper']:.4f}]
-- **Significant:** {'Yes ✅' if orig_ci['ci_lower'] > 0 or orig_ci['ci_upper'] < 0 else 'No ❌'}
+ Original Estimate (No Violations Assumed)
+- 95% CI: [{orig_ci["ci_lower"]:.4f}, {orig_ci["ci_upper"]:.4f}]
+- Statistically significant: {"Yes" if orig_ci["ci_lower"] > 0 or orig_ci["ci_upper"] < 0 else "No"}
 
 """
 
@@ -3084,55 +3322,58 @@ HonestDiD requires pre-treatment periods (excluding the reference period -1) to 
                 m_key = f"M_{m_val}"  # Note: Using "M_" not "M="
                 if m_key in robust_intervals:
                     m_result = robust_intervals[m_key]
-                    ci_lower = m_result['ci_lower']
-                    ci_upper = m_result['ci_upper']
-                    contains_zero = m_result['contains_zero']
+                    ci_lower = m_result["ci_lower"]
+                    ci_upper = m_result["ci_upper"]
+                    contains_zero = m_result["contains_zero"]
                     result_text += f"""
-### M = {m_val} ({method_desc})
-- **Robust 95% CI:** [{ci_lower:.4f}, {ci_upper:.4f}]
-- **Significant:** {'No ❌ (includes zero)' if contains_zero else 'Yes ✅'}
-- **Width:** {ci_upper - ci_lower:.4f}
+ M = {m_val} ({method_desc})
+- Robust 95% CI: [{ci_lower:.4f}, {ci_upper:.4f}]
+- Statistically significant: {"No (confidence interval includes zero)" if contains_zero else "Yes"}
+- Width: {ci_upper - ci_lower:.4f}
 """
 
         # Add breakdown point if available
-        if "breakdown_point" in sensitivity_result and sensitivity_result["breakdown_point"] is not None:
+        if (
+            "breakdown_point" in sensitivity_result
+            and sensitivity_result["breakdown_point"] is not None
+        ):
             breakdown = sensitivity_result["breakdown_point"]
             result_text += f"""
-## 🔍 Breakdown Point Analysis
+ Breakdown Point Analysis
 
-**M̄ (Breakdown Value):** {breakdown:.4f}
+M̄ (Breakdown Value): {breakdown:.4f}
 
-This is the **minimum violation magnitude** where the confidence interval first includes zero.
+This is the minimum violation magnitude where the confidence interval first includes zero.
 
-**Interpretation:**
-- **M̄ = {breakdown:.4f}** means your results remain significant as long as parallel trends violations are smaller than {breakdown:.1%} of the reference trend
-- **Larger M̄ = More Robust**: Results can tolerate bigger violations before losing significance
-- **Smaller M̄ = Less Robust**: Results are sensitive to even small violations
+Interpretation:
+- M̄ = {breakdown:.4f} means your results remain significant as long as parallel trends violations are smaller than {breakdown:.1%} of the reference trend
+- Larger M̄ = More Robust: Results can tolerate bigger violations before losing significance
+- Smaller M̄ = Less Robust: Results are sensitive to even small violations
 
 """
             if breakdown >= 2.0:
-                result_text += "✅ **Very Robust**: Results remain significant even with large violations\n"
+                result_text += "Very Robust: Results remain significant even with large violations\n"
             elif breakdown >= 1.0:
-                result_text += "⚠️ **Moderately Robust**: Results significant for moderate violations\n"
+                result_text += "Moderately Robust: Results significant for moderate violations\n"
             elif breakdown >= 0.5:
-                result_text += "⚠️ **Somewhat Sensitive**: Results vulnerable to moderate violations\n"
+                result_text += "Somewhat Sensitive: Results vulnerable to moderate violations\n"
             else:
-                result_text += "❌ **Highly Sensitive**: Results vulnerable to even small violations\n"
+                result_text += "Highly Sensitive: Results vulnerable to even small violations\n"
         else:
             result_text += """
-## 🔍 Breakdown Point Analysis
+ Breakdown Point Analysis
 
-**M̄ (Breakdown Value):** Not reached within tested range
+M̄ (Breakdown Value): Not reached within tested range
 
-✅ **Very Robust**: The confidence interval remains significant for all tested violation magnitudes.
+Very Robust: The confidence interval remains significant for all tested violation magnitudes.
 This suggests strong robustness to parallel trends violations.
 """
 
         return result_text
-        
+
     except Exception as e:
         logger.error(f"Error in sensitivity analysis: {e}")
-        return f"❌ **Error:** {str(e)}"
+        return f"Error: {str(e)}"
 
 
 @mcp.tool()
@@ -3140,83 +3381,54 @@ async def power_analysis(
     data_id: str = "current",
     target_power: float = 0.8,
     alpha: float = 0.05,
-    trend_type: str = "linear"
+    trend_type: str = "linear",
 ) -> str:
     """
     Conduct power analysis for pre-trends tests using pretrends package.
-    
+
     Based on Roth (2022) "Event-Study Estimates after Testing for Parallel Trends"
-    
+
     Args:
         data_id: Dataset identifier (default: "current")
         target_power: Target statistical power (default: 0.8)
         alpha: Significance level (default: 0.05)
         trend_type: Type of trend violation ("linear" or "non_linear")
-    
+
     Returns:
         Power analysis results with minimum detectable effect sizes
     """
     try:
         analyzer = get_analyzer()
-        
+
         # Check if data is loaded
         if analyzer.data is None:
-            return "❌ **Error:** No data loaded. Please load data first using `load_data`."
-        
+            return "Error: No data loaded. Please load data first using load_data."
+
         # Check if we have event study results
         if "latest" not in analyzer.results:
-            return "❌ **Error:** No DID estimation results available. Please run an estimator first."
-        
+            return "Error: No DID estimation results available. Please run an estimator first."
+
         # Get latest estimation results
         latest_results = analyzer.results["latest"]
-        
+
         # Check if we have event study results
         if "event_study" not in latest_results:
-            return "❌ **Error:** No event study results available. Please run an event study estimator (CS, SA, etc.) first."
-        
-        event_study = latest_results["event_study"]
-        
-        # Prepare data for pretrends analysis
-        sorted_times = sorted(event_study.keys())
-        
-        # Extract coefficients and variance matrix
-        betahat = []
-        time_vec = []
-        
-        for t in sorted_times:
-            betahat.append(event_study[t]["estimate"])
-            time_vec.append(t)
-        
-        betahat = np.array(betahat)
-        time_vec = np.array(time_vec)
-        
-        # Use full covariance matrix if available, otherwise fallback to diagonal
-        if "event_study_vcov" in latest_results:
-            vcov_info = latest_results["event_study_vcov"]
-            sigma = np.array(vcov_info["matrix"])
-            
-            # Ensure period ordering matches
-            vcov_periods = vcov_info["periods"]
-            if vcov_periods == sorted_times:
-                logger.info(f"Using full covariance matrix for pretrends analysis (method: {vcov_info['extraction_method']})")
-            else:
-                # Reorder matrix to match sorted_times
-                period_mapping = {p: i for i, p in enumerate(vcov_periods)}
-                reorder_indices = [period_mapping[t] for t in sorted_times if t in period_mapping]
-                
-                if len(reorder_indices) == len(sorted_times):
-                    sigma = sigma[np.ix_(reorder_indices, reorder_indices)]
-                    logger.info("Reordered covariance matrix to match period ordering")
-                else:
-                    logger.warning("Period mismatch in covariance matrix, using diagonal fallback")
-                    sigma = np.diag([event_study[t]["se"] ** 2 for t in sorted_times])
-        else:
-            logger.warning("Full covariance matrix not available, using diagonal approximation")
-            sigma = np.diag([event_study[t]["se"] ** 2 for t in sorted_times])
-        
+            return "No event study results available. Please run an event study estimator (CS, SA, etc.) first."
+
+        # Prepare matrices (delegates to single source of truth)
+        try:
+            matrices = analyzer._prepare_event_study_matrices(latest_results)
+        except ValueError as e:
+            return f"Error: {e}"
+
+        betahat = matrices["betahat"]
+        sigma = matrices["sigma"]
+        time_vec = matrices["time_vec"]
+        logger.info(f"Using covariance method: {matrices['covariance_method']}")
+
         # Run pretrends power analysis via R estimators
         r_estimators = analyzer.r_estimators
-        
+
         # Calculate minimal detectable slope for target power
         power_result = r_estimators.pretrends_power_analysis(
             betahat=betahat,
@@ -3225,98 +3437,110 @@ async def power_analysis(
             reference_period=-1,
             target_power=target_power,
             alpha=alpha,
-            analyze_slope=None  # Just ex ante analysis for now
+            analyze_slope=None,  # Just ex ante analysis for now
         )
-        
+
         if power_result["status"] != "success":
-            return f"❌ **Error:** Pretrends power analysis failed: {power_result.get('message', 'Unknown error')}"
-        
+            return f"Error: Pretrends power analysis failed: {power_result.get('message', 'Unknown error')}"
+
         # Format results for user display
         return _format_power_analysis_results(power_result, trend_type)
-        
+
     except Exception as e:
         logger.error(f"Error in power analysis: {e}")
-        return f"❌ **Error:** {str(e)}"
+        return f"Error: {str(e)}"
 
 
-def _format_power_analysis_results(power_result: Dict[str, Any], trend_type: str) -> str:
+def _format_power_analysis_results(
+    power_result: Dict[str, Any], trend_type: str
+) -> str:
     """Format pretrends power analysis results for user display."""
-    
+
     if power_result["status"] != "success":
-        return f"❌ **Power Analysis Failed:** {power_result.get('message', 'Unknown error')}"
-    
+        return f"Power Analysis Failed: {power_result.get('message', 'Unknown error')}"
+
     minimal_slope = power_result["minimal_detectable_slope"]
     target_power = power_result["target_power"]
     interpretation = power_result["interpretation"]
-    
+
     # Create formatted output
     output_lines = [
-        "## 🔬 **Pretrends Power Analysis Results**",
+        "Pretrends Power Analysis Results",
         "",
-        f"**Analysis Method:** {trend_type.replace('_', ' ').title()} Trend Violations",
-        f"**Target Power:** {target_power*100}%",
-        f"**Time Periods Analyzed:** {power_result['num_periods']}",
-        f"**Reference Period:** {power_result['reference_period']}",
+        f"Analysis Method: {trend_type.replace('_', ' ').title()} Trend Violations",
+        f"Target Power: {target_power * 100}%",
+        f"Time Periods Analyzed: {power_result['num_periods']}",
+        f"Reference Period: {power_result['reference_period']}",
         "",
-        "### 📊 **Minimal Detectable Effect**"
+        "Minimal Detectable Effect",
     ]
-    
-    output_lines.extend([
-        f"- **Slope:** {minimal_slope:.6f}",
-        f"- **Interpretation:** {interpretation['minimal_slope']}",
-        "",
-        "### ⚡ **Power Assessment**",
-        f"- **Assessment:** {interpretation['power_assessment']}",
-        f"- **Recommendation:** {interpretation['recommendation']}",
-        ""
-    ])
-    
+
+    output_lines.extend(
+        [
+            f"- Slope: {minimal_slope:.6f}",
+            f"- Interpretation: {interpretation['minimal_slope']}",
+            "",
+            "Power Assessment",
+            f"- Assessment: {interpretation['power_assessment']}",
+            f"- Recommendation: {interpretation['recommendation']}",
+            "",
+        ]
+    )
+
     # Add ex post analysis if available
     if power_result.get("power_analysis") and "ex_post" in interpretation:
-        output_lines.extend([
-            "### 🎯 **Specific Slope Analysis**",
-            f"- {interpretation['ex_post']}",
-            ""
-        ])
-    
+        output_lines.extend(
+            ["Specific Slope Analysis", f"- {interpretation['ex_post']}", ""]
+        )
+
     # Add practical interpretation
-    output_lines.extend([
-        "### 🎯 **What This Means**",
-        "",
-        "**Ex Ante Power:** This analysis tells you the magnitude of linear pre-trend violation",
-        f"that your test would detect {target_power*100}% of the time. If violations smaller than",
-        f"{minimal_slope:.6f} exist, your pre-trends test will often miss them.",
-        "",
-        "**Policy Implications:**"
-    ])
-    
+    output_lines.extend(
+        [
+            "What This Means",
+            "",
+            "Ex Ante Power: This analysis tells you the magnitude of linear pre-trend violation",
+            f"that your test would detect {target_power * 100}% of the time. If violations smaller than",
+            f"{minimal_slope:.6f} exist, your pre-trends test will often miss them.",
+            "",
+            "Policy Implications:",
+        ]
+    )
+
     if minimal_slope <= 0.01:
-        output_lines.extend([
-            "✅ Your test has good power to detect small violations",
-            "✅ Negative pre-trends test provides reasonable evidence for parallel trends"
-        ])
+        output_lines.extend(
+            [
+                "Your test has good power to detect small violations",
+                "Negative pre-trends test provides reasonable evidence for parallel trends",
+            ]
+        )
     elif minimal_slope <= 0.05:
-        output_lines.extend([
-            "⚠️ Your test has moderate power - may miss small violations",
-            "⚠️ Consider additional robustness checks (e.g., HonestDiD sensitivity analysis)"
-        ])
+        output_lines.extend(
+            [
+                "Your test has moderate power - may miss small violations",
+                "Consider additional robustness checks (e.g., HonestDiD sensitivity analysis)",
+            ]
+        )
     else:
-        output_lines.extend([
-            "❌ Your test has low power - likely to miss meaningful violations",
-            "❌ Strongly recommend sensitivity analysis before drawing causal conclusions"
-        ])
-    
-    output_lines.extend([
-        "",
-        "### 📚 **Next Steps**",
-        "",
-        "1. **If power is adequate:** Proceed with causal interpretation",
-        "2. **If power is low:** Use `sensitivity_analysis` to assess robustness",
-        "3. **For comprehensive analysis:** Combine with HonestDiD sensitivity bounds",
-        "",
-        "**Reference:** Roth (2022) \"Pretest with Caution: Event-Study Estimates after Testing for Parallel Trends\""
-    ])
-    
+        output_lines.extend(
+            [
+                "Your test has low power - likely to miss meaningful violations",
+                "Strongly recommend sensitivity analysis before drawing causal conclusions",
+            ]
+        )
+
+    output_lines.extend(
+        [
+            "",
+            "Next Steps",
+            "",
+            "1. If power is adequate: Proceed with causal interpretation",
+            "2. If power is low: Use sensitivity_analysis to assess robustness",
+            "3. For comprehensive analysis: Combine with HonestDiD sensitivity bounds",
+            "",
+            'Reference: Roth (2022) "Pretest with Caution: Event-Study Estimates after Testing for Parallel Trends"',
+        ]
+    )
+
     return "\n".join(output_lines)
 
 
@@ -3324,20 +3548,21 @@ def _format_power_analysis_results(power_result: Dict[str, Any], trend_type: str
 # EXPORT HELPER FUNCTIONS
 # =============================================================================
 
+
 def _format_results_as_csv(data: Dict) -> str:
     """Format results as CSV."""
     import pandas as pd
     from io import StringIO
-    
+
     output = StringIO()
     results = data.get("results", {})
-    
+
     # Event study results
     if "event_study" in results:
         df = pd.DataFrame(results["event_study"]).T
         df.index.name = "period"
         df.to_csv(output)
-    
+
     # Overall ATT
     if "overall_att" in results:
         output.write("\n\nOverall ATT\n")
@@ -3347,7 +3572,7 @@ def _format_results_as_csv(data: Dict) -> str:
         output.write(f"ci_lower,{att['ci_lower']}\n")
         output.write(f"ci_upper,{att['ci_upper']}\n")
         output.write(f"p_value,{att.get('pvalue', att.get('p_value', 'N/A'))}\n")
-    
+
     return output.getvalue()
 
 
@@ -3355,11 +3580,11 @@ def _format_results_as_latex(data: Dict) -> str:
     """Format results as LaTeX table."""
     results = data.get("results", {})
     output = []
-    
+
     # Header
     output.append("% DID Analysis Results")
     output.append("% Generated by ChatDiD\n")
-    
+
     # Event study table
     if "event_study" in results:
         output.append("\\begin{table}[htbp]")
@@ -3369,15 +3594,17 @@ def _format_results_as_latex(data: Dict) -> str:
         output.append("\\hline\\hline")
         output.append("Period & Estimate & Std. Error & CI Lower & CI Upper \\\\")
         output.append("\\hline")
-        
+
         for period, est in sorted(results["event_study"].items()):
-            output.append(f"{period} & {est['estimate']:.4f} & {est['se']:.4f} & "
-                         f"{est['ci_lower']:.4f} & {est['ci_upper']:.4f} \\\\")
-        
+            output.append(
+                f"{period} & {est['estimate']:.4f} & {est['se']:.4f} & "
+                f"{est['ci_lower']:.4f} & {est['ci_upper']:.4f} \\\\"
+            )
+
         output.append("\\hline\\hline")
         output.append("\\end{tabular}")
         output.append("\\end{table}\n")
-    
+
     # Overall ATT
     if "overall_att" in results:
         att = results["overall_att"]
@@ -3386,8 +3613,8 @@ def _format_results_as_latex(data: Dict) -> str:
         output.append("\\caption{Overall Average Treatment Effect}")
         output.append("\\begin{tabular}{lc}")
         output.append("\\hline\\hline")
-        se_val = att.get('se', att.get('std_error', None))
-        p_val = att.get('pvalue', att.get('p_value', None))
+        se_val = att.get("se", att.get("std_error", None))
+        p_val = att.get("pvalue", att.get("p_value", None))
         output.append(f"ATT & {att['estimate']:.4f}")
         output.append(f"    & ({se_val:.4f}) \\\\" if se_val else "    & (N/A) \\\\")
         output.append(f"95\\% CI & [{att['ci_lower']:.4f}, {att['ci_upper']:.4f}] \\\\")
@@ -3395,7 +3622,7 @@ def _format_results_as_latex(data: Dict) -> str:
         output.append("\\hline\\hline")
         output.append("\\end{tabular}")
         output.append("\\end{table}")
-    
+
     return "\n".join(output)
 
 
@@ -3403,44 +3630,50 @@ def _format_results_as_markdown(data: Dict) -> str:
     """Format results as Markdown."""
     results = data.get("results", {})
     output = []
-    
+
     output.append("# DID Analysis Results")
     output.append(f"\nGenerated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-    
+
     # Method information
     if "method" in results:
-        output.append(f"## Method: {results['method']}\n")
-    
+        output.append(f"Method: {results['method']}\n")
+
     # Overall ATT
     if "overall_att" in results:
         att = results["overall_att"]
-        output.append("## Overall Average Treatment Effect\n")
-        output.append(f"- **Estimate:** {att['estimate']:.4f}")
-        se_val = att.get('se', att.get('std_error', None))
-        p_val = att.get('pvalue', att.get('p_value', None))
-        output.append(f"- **Std. Error:** {se_val:.4f}" if se_val else "- **Std. Error:** N/A")
-        output.append(f"- **95% CI:** [{att['ci_lower']:.4f}, {att['ci_upper']:.4f}]")
-        output.append(f"- **p-value:** {p_val:.4f}\n" if p_val else "- **p-value:** N/A\n")
-    
+        output.append("Overall Average Treatment Effect\n")
+        output.append(f"- Estimate: {att['estimate']:.4f}")
+        se_val = att.get("se", att.get("std_error", None))
+        p_val = att.get("pvalue", att.get("p_value", None))
+        output.append(
+            f"- Std. Error: {se_val:.4f}" if se_val else "- Std. Error: N/A"
+        )
+        output.append(f"- 95% CI: [{att['ci_lower']:.4f}, {att['ci_upper']:.4f}]")
+        output.append(
+            f"- p-value: {p_val:.4f}\n" if p_val else "- p-value: N/A\n"
+        )
+
     # Event study
     if "event_study" in results:
-        output.append("## Event Study Estimates\n")
+        output.append("Event Study Estimates\n")
         output.append("| Period | Estimate | Std. Error | CI Lower | CI Upper |")
         output.append("|--------|----------|------------|----------|----------|")
-        
+
         for period, est in sorted(results["event_study"].items()):
-            output.append(f"| {period} | {est['estimate']:.4f} | {est['se']:.4f} | "
-                         f"{est['ci_lower']:.4f} | {est['ci_upper']:.4f} |")
+            output.append(
+                f"| {period} | {est['estimate']:.4f} | {est['se']:.4f} | "
+                f"{est['ci_lower']:.4f} | {est['ci_upper']:.4f} |"
+            )
         output.append("")
-    
+
     # Diagnostics if included
     if "diagnostics" in data:
-        output.append("## Diagnostics\n")
+        output.append("Diagnostics\n")
         diag = data["diagnostics"]
         if isinstance(diag, dict):
             for key, value in diag.items():
-                output.append(f"- **{key}:** {value}")
-    
+                output.append(f"- {key}: {value}")
+
     return "\n".join(output)
 
 
@@ -3455,16 +3688,19 @@ def _format_results_as_excel(data: Dict) -> bytes:
 # COMPARISON EXPORT HELPER FUNCTIONS
 # =============================================================================
 
-def _format_comparison_as_markdown(comparison_data: Dict[str, Dict], include_diagnostics: bool = False) -> str:
+
+def _format_comparison_as_markdown(
+    comparison_data: Dict[str, Dict], include_diagnostics: bool = False
+) -> str:
     """Format method comparison as Markdown table."""
     output = []
     output.append("# DID Methods Comparison Report")
     output.append(f"\nGenerated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    output.append(f"\n**Number of Methods:** {len(comparison_data)}")
+    output.append(f"\nNumber of Methods: {len(comparison_data)}")
     output.append("")
 
     # Overall ATT Comparison
-    output.append("## Overall Average Treatment Effects (ATT)")
+    output.append("Overall Average Treatment Effects (ATT)")
     output.append("")
     output.append("| Method | Estimate | Std. Error | 95% CI | p-value | Significant |")
     output.append("|--------|----------|------------|--------|---------|-------------|")
@@ -3489,14 +3725,16 @@ def _format_comparison_as_markdown(comparison_data: Dict[str, Dict], include_dia
             else:
                 se_str = str(se)
 
-            if isinstance(ci_lower, (int, float)) and isinstance(ci_upper, (int, float)):
+            if isinstance(ci_lower, (int, float)) and isinstance(
+                ci_upper, (int, float)
+            ):
                 ci_str = f"[{ci_lower:.4f}, {ci_upper:.4f}]"
             else:
                 ci_str = "N/A"
 
             if isinstance(pval, (int, float)):
                 pval_str = f"{pval:.4f}"
-                sig_str = "✅ Yes" if pval < 0.05 else "❌ No"
+                sig_str = "Yes" if pval < 0.05 else "No"
             else:
                 pval_str = str(pval)
                 sig_str = "N/A"
@@ -3504,7 +3742,9 @@ def _format_comparison_as_markdown(comparison_data: Dict[str, Dict], include_dia
             # Friendly method name
             method_display = method_name.replace("_", " ").title()
 
-            output.append(f"| {method_display} | {est_str} | {se_str} | {ci_str} | {pval_str} | {sig_str} |")
+            output.append(
+                f"| {method_display} | {est_str} | {se_str} | {ci_str} | {pval_str} | {sig_str} |"
+            )
 
     output.append("")
 
@@ -3516,9 +3756,15 @@ def _format_comparison_as_markdown(comparison_data: Dict[str, Dict], include_dia
             all_event_times.update(results["event_study"].keys())
 
     if all_event_times:
-        sorted_times = sorted(all_event_times, key=lambda x: float(x) if isinstance(x, (int, float, str)) and str(x).replace('-','').replace('.','').isdigit() else 999)
+        sorted_times = sorted(
+            all_event_times,
+            key=lambda x: float(x)
+            if isinstance(x, (int, float, str))
+            and str(x).replace("-", "").replace(".", "").isdigit()
+            else 999,
+        )
 
-        output.append("## Event Study Estimates by Period")
+        output.append("Event Study Estimates by Period")
         output.append("")
 
         # Create header
@@ -3553,15 +3799,17 @@ def _format_comparison_as_markdown(comparison_data: Dict[str, Dict], include_dia
     output.append("")
     output.append("---")
     output.append("")
-    output.append("**Legend:**")
-    output.append("- ✅ Statistically significant at 5% level")
-    output.append("- ❌ Not statistically significant")
+    output.append("Legend:")
+    output.append("- Statistically significant at 5% level")
+    output.append("- Not statistically significant")
     output.append("- N/A: Not available for this method")
 
     return "\n".join(output)
 
 
-def _format_comparison_as_latex(comparison_data: Dict[str, Dict], include_diagnostics: bool = False) -> str:
+def _format_comparison_as_latex(
+    comparison_data: Dict[str, Dict], include_diagnostics: bool = False
+) -> str:
     """Format method comparison as LaTeX table."""
     output = []
     output.append("% DID Methods Comparison")
@@ -3574,7 +3822,9 @@ def _format_comparison_as_latex(comparison_data: Dict[str, Dict], include_diagno
     output.append("\\caption{Comparison of DID Estimation Methods - Overall ATT}")
     output.append("\\begin{tabular}{lccccl}")
     output.append("\\hline\\hline")
-    output.append("Method & Estimate & Std. Error & 95\\% CI & p-value & Significant \\\\")
+    output.append(
+        "Method & Estimate & Std. Error & 95\\% CI & p-value & Significant \\\\"
+    )
     output.append("\\hline")
 
     for method_name, results in comparison_data.items():
@@ -3597,7 +3847,9 @@ def _format_comparison_as_latex(comparison_data: Dict[str, Dict], include_diagno
             else:
                 se_str = str(se)
 
-            if isinstance(ci_lower, (int, float)) and isinstance(ci_upper, (int, float)):
+            if isinstance(ci_lower, (int, float)) and isinstance(
+                ci_upper, (int, float)
+            ):
                 ci_str = f"[{ci_lower:.3f}, {ci_upper:.3f}]"
             else:
                 ci_str = "N/A"
@@ -3610,9 +3862,16 @@ def _format_comparison_as_latex(comparison_data: Dict[str, Dict], include_diagno
                 sig_str = "N/A"
 
             # Format method name for LaTeX
-            method_display = method_name.replace("_", " ").title().replace("Bjs", "BJS").replace("Dcdh", "DCDH")
+            method_display = (
+                method_name.replace("_", " ")
+                .title()
+                .replace("Bjs", "BJS")
+                .replace("Dcdh", "DCDH")
+            )
 
-            output.append(f"{method_display} & {est_str} & {se_str} & {ci_str} & {pval_str} & {sig_str} \\\\")
+            output.append(
+                f"{method_display} & {est_str} & {se_str} & {ci_str} & {pval_str} & {sig_str} \\\\"
+            )
 
     output.append("\\hline\\hline")
     output.append("\\end{tabular}")
@@ -3627,7 +3886,13 @@ def _format_comparison_as_latex(comparison_data: Dict[str, Dict], include_diagno
             all_event_times.update(results["event_study"].keys())
 
     if all_event_times:
-        sorted_times = sorted(all_event_times, key=lambda x: float(x) if isinstance(x, (int, float, str)) and str(x).replace('-','').replace('.','').isdigit() else 999)
+        sorted_times = sorted(
+            all_event_times,
+            key=lambda x: float(x)
+            if isinstance(x, (int, float, str))
+            and str(x).replace("-", "").replace(".", "").isdigit()
+            else 999,
+        )
 
         # Limit to max 10 periods for readability
         if len(sorted_times) > 10:
@@ -3649,7 +3914,12 @@ def _format_comparison_as_latex(comparison_data: Dict[str, Dict], include_diagno
         # Header
         header = "Period"
         for method_name in comparison_data.keys():
-            method_display = method_name.replace("_", " ").title().replace("Bjs", "BJS").replace("Dcdh", "DCDH")
+            method_display = (
+                method_name.replace("_", " ")
+                .title()
+                .replace("Bjs", "BJS")
+                .replace("Dcdh", "DCDH")
+            )
             header += f" & {method_display}"
         header += " \\\\"
         output.append(header)
@@ -3681,7 +3951,9 @@ def _format_comparison_as_latex(comparison_data: Dict[str, Dict], include_diagno
     return "\n".join(output)
 
 
-def _format_comparison_as_csv(comparison_data: Dict[str, Dict], include_diagnostics: bool = False) -> str:
+def _format_comparison_as_csv(
+    comparison_data: Dict[str, Dict], include_diagnostics: bool = False
+) -> str:
     """Format method comparison as CSV."""
     import pandas as pd
     from io import StringIO
@@ -3699,7 +3971,7 @@ def _format_comparison_as_csv(comparison_data: Dict[str, Dict], include_diagnost
                 "std_error": att.get("se", att.get("std_error", "")),
                 "ci_lower": att.get("ci_lower", ""),
                 "ci_upper": att.get("ci_upper", ""),
-                "p_value": att.get("pvalue", att.get("p_value", ""))
+                "p_value": att.get("pvalue", att.get("p_value", "")),
             }
             att_data.append(row)
 
@@ -3716,7 +3988,13 @@ def _format_comparison_as_csv(comparison_data: Dict[str, Dict], include_diagnost
             all_event_times.update(results["event_study"].keys())
 
     if all_event_times:
-        sorted_times = sorted(all_event_times, key=lambda x: float(x) if isinstance(x, (int, float, str)) and str(x).replace('-','').replace('.','').isdigit() else 999)
+        sorted_times = sorted(
+            all_event_times,
+            key=lambda x: float(x)
+            if isinstance(x, (int, float, str))
+            and str(x).replace("-", "").replace(".", "").isdigit()
+            else 999,
+        )
 
         event_study_data = []
         for event_time in sorted_times:
@@ -3726,7 +4004,9 @@ def _format_comparison_as_csv(comparison_data: Dict[str, Dict], include_diagnost
                     est_data = results["event_study"][event_time]
                     if isinstance(est_data, dict):
                         row[f"{method_name}_estimate"] = est_data.get("estimate", "")
-                        row[f"{method_name}_se"] = est_data.get("se", est_data.get("std_error", ""))
+                        row[f"{method_name}_se"] = est_data.get(
+                            "se", est_data.get("std_error", "")
+                        )
                     else:
                         row[f"{method_name}_estimate"] = ""
                         row[f"{method_name}_se"] = ""

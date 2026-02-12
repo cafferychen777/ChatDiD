@@ -10,10 +10,11 @@ import os
 import shutil
 import base64
 import logging
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from collections import defaultdict
+from urllib.parse import urlparse, unquote
 
 logger = logging.getLogger(__name__)
 
@@ -371,27 +372,6 @@ class StorageManager:
         # If we get here, all attempts failed
         raise RuntimeError(f"Cannot create writable output directory after {max_attempts} attempts")
     
-    def _is_writable_location(self) -> bool:
-        """
-        Check if the base directory location is writable.
-        
-        Returns:
-            True if location is writable, False otherwise
-        """
-        try:
-            # Try to create the directory if it doesn't exist
-            self.base_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Test write access by creating a temporary file
-            test_file = self.base_dir / '.write_test'
-            test_file.write_text('test')
-            test_file.unlink()  # Remove test file
-            
-            return True
-        except (PermissionError, OSError) as e:
-            logger.error(f"Cannot write to {self.base_dir}: {e}")
-            return False
-    
     def _initialize_directories(self):
         """Create all required directories."""
         for dir_path in self.dirs.values():
@@ -465,8 +445,8 @@ class StorageManager:
             with open(file_path, 'w', encoding='utf-8') as f:
                 f.write(content)
         
-        # Generate MCP resource URI
-        resource_uri = f"file:///{file_path}"
+        # Generate MCP resource URI (handles spaces, unicode, cross-platform)
+        resource_uri = file_path.resolve().as_uri()
         
         # Get file stats
         file_stats = file_path.stat()
@@ -492,11 +472,11 @@ class StorageManager:
         Returns:
             MCP resource dictionary
         """
-        # Parse URI to get file path
-        if uri.startswith('file:///'):
-            file_path = Path(uri[8:])  # Remove 'file:///'
-        else:
-            raise ValueError(f"Unsupported URI scheme: {uri}")
+        # Parse URI to get file path (handles percent-encoding and cross-platform)
+        parsed = urlparse(uri)
+        if parsed.scheme != 'file':
+            raise ValueError(f"Unsupported URI scheme: {parsed.scheme}")
+        file_path = Path(unquote(parsed.path))
         
         if not file_path.exists():
             raise FileNotFoundError(f"Resource not found: {uri}")
@@ -576,7 +556,7 @@ class StorageManager:
                     file_stats = file_path.stat()
                     
                     resources.append({
-                        'uri': f"file:///{file_path}",
+                        'uri': file_path.resolve().as_uri(),
                         'name': file_path.name,
                         'title': self._format_title(file_path.name),
                         'description': f"Generated {dir_name.replace('_', ' ')}",
