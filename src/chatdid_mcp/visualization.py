@@ -133,8 +133,8 @@ class DiDVisualizer:
         
         # Calculate confidence intervals
         z_score = 1.96 if confidence_level == 0.95 else 2.576  # 95% or 99%
-        ci_lower = [est - z_score * se for est, se in zip(estimates, ses)]
-        ci_upper = [est + z_score * se for est, se in zip(estimates, ses)]
+        ci_lower = [est - z_score * se for est, se in zip(estimates, ses, strict=False)]
+        ci_upper = [est + z_score * se for est, se in zip(estimates, ses, strict=False)]
         
         if self.backend == "matplotlib" and MATPLOTLIB_AVAILABLE:
             return self._create_matplotlib_event_study(
@@ -524,7 +524,7 @@ class DiDVisualizer:
         ax1.set_xticklabels(comp_names, rotation=45, ha='right')
 
         # Add value labels on bars
-        for bar, weight in zip(bars1, weights):
+        for bar, weight in zip(bars1, weights, strict=False):
             height = bar.get_height()
             ax1.text(bar.get_x() + bar.get_width()/2., height + 0.01,
                     f'{weight:.3f}', ha='center', va='bottom', fontsize=10)
@@ -543,7 +543,7 @@ class DiDVisualizer:
         ax2.legend()
 
         # Add comparison type labels
-        for i, (est, weight, name) in enumerate(zip(estimates, weights, comp_names)):
+        for _, (est, weight, name) in enumerate(zip(estimates, weights, comp_names, strict=False)):
             ax2.annotate(name, (est, weight), xytext=(5, 5),
                         textcoords='offset points', fontsize=9, alpha=0.8)
 
@@ -753,7 +753,7 @@ class DiDVisualizer:
         ax2.legend()
 
         # Add value labels on bars
-        for bar, value in zip(bars, values):
+        for bar, value in zip(bars, values, strict=False):
             height = bar.get_height()
             ax2.text(bar.get_x() + bar.get_width()/2., height + 0.01,
                     f'{value:.1%}', ha='center', va='bottom', fontsize=12, fontweight='bold')
@@ -956,7 +956,8 @@ class DiDVisualizer:
             content=html_content,
             file_type="comprehensive_report",
             method=estimation_results.get('method', 'unknown').replace(' ', '_').lower(),
-            extension="html"
+            extension="html",
+            custom_path=save_path
         )
 
         return {
@@ -978,6 +979,12 @@ class DiDVisualizer:
         title: Optional[str]
     ) -> str:
         """Generate HTML report with embedded plots."""
+
+        def _fmt(val, spec=".4f"):
+            """Format numeric values; pass through non-numeric as-is."""
+            if isinstance(val, (int, float)):
+                return f"{val:{spec}}"
+            return str(val)
 
         html = f"""
         <!DOCTYPE html>
@@ -1018,10 +1025,10 @@ class DiDVisualizer:
             if "overall_att" in estimation_results:
                 att = estimation_results["overall_att"]
                 html += f"""
-                    <p><strong>Overall ATT:</strong> {att.get('estimate', 'N/A'):.4f}</p>
-                    <p><strong>Standard Error:</strong> {att.get('se', 'N/A'):.4f}</p>
-                    <p><strong>95% CI:</strong> [{att.get('ci_lower', 'N/A'):.4f}, {att.get('ci_upper', 'N/A'):.4f}]</p>
-                    <p><strong>P-value:</strong> {att.get('pvalue', 'N/A'):.4f}</p>
+                    <p><strong>Overall ATT:</strong> {_fmt(att.get('estimate', 'N/A'))}</p>
+                    <p><strong>Standard Error:</strong> {_fmt(att.get('se', 'N/A'))}</p>
+                    <p><strong>95% CI:</strong> [{_fmt(att.get('ci_lower', 'N/A'))}, {_fmt(att.get('ci_upper', 'N/A'))}]</p>
+                    <p><strong>P-value:</strong> {_fmt(att.get('pvalue', 'N/A'))}</p>
                 """
 
             html += "</div></div>"

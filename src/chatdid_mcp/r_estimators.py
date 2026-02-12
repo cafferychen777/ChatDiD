@@ -287,7 +287,7 @@ class REstimators:
             never_treated = (data_corrected[cohort_var] == 0).sum()
             treated_obs = (data_corrected['treat_corrected'] == 1).sum()
             
-            logger.info(f"Corrected treatment variable created:")
+            logger.info("Corrected treatment variable created:")
             logger.info(f"  - Never treated observations: {never_treated}")
             logger.info(f"  - Treated observations: {treated_obs}")
             logger.info(f"  - Total observations: {len(data_corrected)}")
@@ -765,7 +765,7 @@ class REstimators:
             event_study = {}
             overall_estimates = []
             
-            for idx, row in coef_df.iterrows():
+            for _idx, row in coef_df.iterrows():
                 coef_name = str(row.get('coefficient', ''))
                 estimate = float(row['Estimate'])
                 std_error = float(row['Std. Error'])
@@ -1063,7 +1063,7 @@ class REstimators:
             overall_estimates = []
             nan_count = 0
 
-            for idx, row in result_event_df.iterrows():
+            for _idx, row in result_event_df.iterrows():
                 term = int(row['term'])
                 estimate = float(row['estimate'])
                 std_error = float(row['std.error'])
@@ -1331,7 +1331,7 @@ class REstimators:
                         # SAFETY CHECK: Inf should not appear since it's excluded in ref = c(-1, Inf)
                         # This check remains as a safeguard in case the R formula doesn't work as expected
                         if np.isinf(rel_time):
-                            logger.warning(f"Unexpected: rel_time = Inf found in coefficients (should be excluded by ref parameter)")
+                            logger.warning("Unexpected: rel_time = Inf found in coefficients (should be excluded by ref parameter)")
                             continue  # Skip this coefficient
 
                         event_study[rel_time] = {
@@ -2571,7 +2571,7 @@ class REstimators:
 
             return {
                 "status": "success",
-                "method": f"Roth & Sant'Anna (2023) Efficient Estimator",
+                "method": "Roth & Sant'Anna (2023) Efficient Estimator",
                 "estimand": estimand,
                 "beta": beta,
                 "overall_att": overall_att,
@@ -2660,7 +2660,7 @@ class REstimators:
             }
 
         try:
-            logger.info(f"Running Generalized Synthetic Control (gsynth)")
+            logger.info("Running Generalized Synthetic Control (gsynth)")
 
             # Convert to R dataframe
             with localconverter(robjects.default_converter + pandas2ri.converter):
@@ -2841,7 +2841,7 @@ class REstimators:
             }
 
         try:
-            logger.info(f"Running Synthetic Difference-in-Differences (synthdid)")
+            logger.info("Running Synthetic Difference-in-Differences (synthdid)")
 
             # Check for simultaneous treatment timing
             if cohort_col:
@@ -3378,7 +3378,7 @@ class REstimators:
             }
 
         try:
-            logger.info(f"Running Extended TWFE estimator (Wooldridge 2021)")
+            logger.info("Running Extended TWFE estimator (Wooldridge 2021)")
 
             # Validate cohort variable
             if cohort_col not in data.columns:

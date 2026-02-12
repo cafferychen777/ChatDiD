@@ -12,9 +12,23 @@ import logging
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
-from urllib.parse import urlparse, unquote
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 logger = logging.getLogger(__name__)
+
+# Single source of truth for extension → MIME type mapping.
+_MIME_TYPES: Dict[str, str] = {
+    '.png': 'image/png',
+    '.svg': 'image/svg+xml',
+    '.html': 'text/html',
+    '.pdf': 'application/pdf',
+    '.csv': 'text/csv',
+    '.json': 'application/json',
+    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    '.tex': 'text/x-latex',
+    '.md': 'text/markdown',
+}
 
 
 class StorageManager:
@@ -449,7 +463,7 @@ class StorageManager:
         file_stats = file_path.stat()
         
         return {
-            'path': str(file_path),
+            'path': str(file_path.resolve()),
             'uri': resource_uri,
             'size': file_stats.st_size,
             'created': datetime.fromtimestamp(file_stats.st_ctime).isoformat(),
@@ -469,27 +483,20 @@ class StorageManager:
         Returns:
             MCP resource dictionary
         """
-        # Parse URI to get file path (handles percent-encoding and cross-platform)
+        # Parse URI to get file path (handles percent-encoding and cross-platform).
+        # url2pathname correctly strips the leading '/' on Windows drive letters
+        # (e.g. '/C:/path' → 'C:\\path') while being a no-op on POSIX.
         parsed = urlparse(uri)
         if parsed.scheme != 'file':
             raise ValueError(f"Unsupported URI scheme: {parsed.scheme}")
-        file_path = Path(unquote(parsed.path))
+        file_path = Path(url2pathname(parsed.path))
         
         if not file_path.exists():
             raise FileNotFoundError(f"Resource not found: {uri}")
         
         # Determine MIME type
-        mime_types = {
-            '.png': 'image/png',
-            '.svg': 'image/svg+xml',
-            '.html': 'text/html',
-            '.pdf': 'application/pdf',
-            '.csv': 'text/csv',
-            '.json': 'application/json',
-        }
-        
         extension = file_path.suffix.lower()
-        mime_type = mime_types.get(extension, 'application/octet-stream')
+        mime_type = _MIME_TYPES.get(extension, 'application/octet-stream')
         
         # Read content
         if extension in ['.png', '.pdf']:
@@ -539,15 +546,7 @@ class StorageManager:
                 if file_path.is_file():
                     # Determine MIME type
                     extension = file_path.suffix.lower()
-                    mime_types = {
-                        '.png': 'image/png',
-                        '.svg': 'image/svg+xml',
-                        '.html': 'text/html',
-                        '.pdf': 'application/pdf',
-                        '.csv': 'text/csv',
-                        '.json': 'application/json',
-                    }
-                    mime_type = mime_types.get(extension, 'application/octet-stream')
+                    mime_type = _MIME_TYPES.get(extension, 'application/octet-stream')
                     
                     # Get file stats
                     file_stats = file_path.stat()
@@ -608,11 +607,11 @@ class StorageManager:
             Number of files removed
         """
         removed_count = 0
-        
-        for dir_name, dir_path in self.dirs.items():
+
+        for _, dir_path in self.dirs.items():
             if not dir_path.exists():
                 continue
-            
+
             # Get all files with modification times
             files = []
             for file_path in dir_path.iterdir():
@@ -715,34 +714,4 @@ class StorageManager:
                 return f"{size:.2f} {unit}"
             size /= 1024.0
         return f"{size:.2f} TB"
-
-
-# Example usage and testing
-if __name__ == "__main__":
-    # Set up logging
-    logging.basicConfig(level=logging.INFO)
-    
-    # Create storage manager
-    storage = StorageManager()
-    
-    # Test saving a file
-    test_content = "# Test Report\nThis is a test HTML report."
-    result = storage.save_file(
-        test_content,
-        file_type="test_report",
-        method="example",
-        extension="html"
-    )
-    print(f"Saved file: {result}")
-    
-    # List resources
-    resources = storage.list_resources()
-    print(f"\nAvailable resources: {len(resources)}")
-    for resource in resources[:3]:  # Show first 3
-        print(f"  - {resource['name']}: {resource['mimeType']}")
-    
-    # Get storage stats
-    stats = storage.get_storage_stats()
-    print(f"\nStorage stats:")
-    print(f"  Total files: {stats['total_files']}")
     print(f"  Total size: {stats['total_size_formatted']}")

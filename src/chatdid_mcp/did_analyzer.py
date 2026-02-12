@@ -104,7 +104,7 @@ class DiDAnalyzer:
         elif treatment_col and treatment_col in data.columns:
             # Auto-detect: is treatment_col binary or already a cohort?
             unique_vals = data[treatment_col].dropna().unique()
-            is_binary = len(unique_vals) <= 2 and set(unique_vals).issubset({0, 1, True, False})
+            is_binary = len(unique_vals) <= 2 and set(unique_vals).issubset({0, 1})
 
             if is_binary:
                 # Binary treatment → auto-create cohort from first treatment time
@@ -295,7 +295,7 @@ class DiDAnalyzer:
         for col in self.data.columns:
             if self.data[col].dtype in ['bool', 'int64', 'float64']:
                 unique_vals = self.data[col].dropna().unique()
-                if len(unique_vals) == 2 and set(unique_vals).issubset({0, 1, True, False}):
+                if len(unique_vals) == 2 and set(unique_vals).issubset({0, 1}):
                     potential_treatments.append({
                         "column": col,
                         "values": list(unique_vals),
@@ -419,7 +419,7 @@ class DiDAnalyzer:
                 cohort_col=self.config.get('cohort_col', self.config['treatment_col']),
                 **kwargs
             )
-        elif method == "gardner":
+        elif method == "gardner_two_stage":
             return self.r_estimators.gardner_two_stage_estimator(
                 data=self.data,
                 outcome_col=self.config['outcome_col'],
@@ -1057,7 +1057,12 @@ class DiDAnalyzer:
             return results
 
         # Set backend
-        self.visualizer.set_backend(backend)
+        if not self.visualizer.set_backend(backend):
+            available = self.visualizer.get_available_backends()
+            return {
+                "status": "error",
+                "message": f"Backend '{backend}' is not available. Available backends: {available}"
+            }
 
         # Create plot
         return self.visualizer.create_event_study_plot(
@@ -1096,7 +1101,12 @@ class DiDAnalyzer:
             }
 
         # Set backend
-        self.visualizer.set_backend(backend)
+        if not self.visualizer.set_backend(backend):
+            available = self.visualizer.get_available_backends()
+            return {
+                "status": "error",
+                "message": f"Backend '{backend}' is not available. Available backends: {available}"
+            }
 
         plots = {}
 
@@ -1144,7 +1154,12 @@ class DiDAnalyzer:
             return results
 
         # Set backend
-        self.visualizer.set_backend(backend)
+        if not self.visualizer.set_backend(backend):
+            available = self.visualizer.get_available_backends()
+            return {
+                "status": "error",
+                "message": f"Backend '{backend}' is not available. Available backends: {available}"
+            }
 
         # Create comprehensive report
         return self.visualizer.create_comprehensive_did_report(

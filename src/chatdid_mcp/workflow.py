@@ -346,7 +346,7 @@ class DiDWorkflow:
         - "callaway_santanna": CS estimator
         - "sun_abraham": SA estimator
         - "bjs_imputation": BJS imputation
-        - "gardner": Gardner two-stage
+        - "gardner_two_stage": Gardner two-stage
         - "dcdh": de Chaisemartin & D'Haultfoeuille estimator
         - "gsynth": Generalized synthetic control (Xu 2017)
         - "synthdid": Synthetic DID (Arkhangelsky et al. 2019)
@@ -391,8 +391,8 @@ class DiDWorkflow:
         robustness_pairs = {
             "callaway_santanna": "sun_abraham",
             "sun_abraham": "callaway_santanna",
-            "bjs_imputation": "gardner",
-            "gardner": "sun_abraham",
+            "bjs_imputation": "gardner_two_stage",
+            "gardner_two_stage": "sun_abraham",
             "dcdh": "callaway_santanna",
             "gsynth": "callaway_santanna",
             "synthdid": "gsynth",
@@ -404,11 +404,14 @@ class DiDWorkflow:
         logger.info(f"Step 3a: Running primary estimator - {method}")
         primary_estimation = await self.analyzer.estimate_did(method=method)
 
-        # Store primary results.
-        # "latest" is set to the PRIMARY estimator intentionally: Steps 4-5
-        # read it for parallel trends assessment and final inference.
-        # The robustness estimator is for comparison only — it must NOT
-        # overwrite "latest".
+        # Two stores, two consumers (not duplication):
+        #   analyzer.results["workflow_{method}"]  — per-method results for
+        #       external tools (export, plot, comparison). Flat key → result dict.
+        #   workflow_state["estimation"]           — combined view (primary +
+        #       robustness + comparison) for the final report generator.
+        # "latest" points to the primary estimator; Steps 4-5 read it for
+        # parallel trends assessment and final inference. The robustness
+        # estimator must NOT overwrite "latest".
         if primary_estimation.get("status") == "success":
             self.analyzer.results[f"workflow_{method}"] = primary_estimation
             self.analyzer.results["latest"] = primary_estimation
@@ -604,6 +607,7 @@ class DiDWorkflow:
         if step1["status"] != "success":
             results["status"] = "failed"
             results["failed_step"] = 1
+            results["message"] = step1.get("message", "Step 1 failed")
             return results
         
         # Step 2: Diagnose if staggered (informative, not blocking —
@@ -626,6 +630,7 @@ class DiDWorkflow:
         if step3.get("status") != "success":
             results["status"] = "failed"
             results["failed_step"] = 3
+            results["message"] = step3.get("message", "Step 3 failed")
             return results
 
         # Step 4: Assess parallel trends (non-blocking — informative assessment)
@@ -645,7 +650,8 @@ class DiDWorkflow:
         else:
             results["status"] = "failed"
             results["failed_step"] = 5
-        
+            results["message"] = step5.get("message", "Step 5 failed")
+
         return results
     
     @staticmethod
@@ -712,7 +718,7 @@ class DiDWorkflow:
 
                 severity = step_data.get("severity_assessment", {})
                 if severity:
-                    report += f"\nTWFE Bias Severity Assessment:\n"
+                    report += "\nTWFE Bias Severity Assessment:\n"
                     report += f"- Forbidden Weight Severity: {severity.get('forbidden_weight_severity', 'N/A')} ({severity.get('forbidden_weight_pct', 'N/A')}%)\n"
                     report += f"- Negative Weight Severity: {severity.get('negative_weight_severity', 'N/A')} ({severity.get('negative_weight_pct', 'N/A')}%)\n"
                     report += f"- Overall Severity: {severity.get('overall_severity', 'N/A')}\n"
@@ -735,7 +741,7 @@ class DiDWorkflow:
 
                         comparison = est.get("comparison", {})
                         if comparison:
-                            report += f"\nRobustness Comparison:\n"
+                            report += "\nRobustness Comparison:\n"
                             if "att_difference" in comparison:
                                 report += f"- Absolute Difference: {comparison['att_difference']:.4f}\n"
                             if "relative_difference_pct" in comparison:
@@ -767,7 +773,7 @@ class DiDWorkflow:
 
         # Add Evidence Assessment section
         evidence = self.assess_evidence()
-        report += f"\nEvidence Assessment\n"
+        report += "\nEvidence Assessment\n"
         report += f"Verdict: {evidence['verdict']}\n\n"
         report += f"{evidence['summary']}\n\n"
         report += "Details:\n"
