@@ -66,6 +66,30 @@ class REstimators:
             except Exception as e:
                 logger.warning(f"Could not load R package {pkg_name}: {e}")
     
+    @staticmethod
+    def parse_treatment_from_formula(formula: str) -> str:
+        """Extract treatment variable name from an R formula string.
+
+        Handles standard R names (treat), dotted names (first.treat),
+        and backtick-quoted names (`my var`).
+
+        Raises:
+            ValueError: If the treatment variable cannot be parsed.
+        """
+        import re
+        # Backtick-quoted name: outcome ~ `first treat`
+        match = re.search(r'~\s*`([^`]+)`', formula)
+        if match:
+            return match.group(1)
+        # Standard R name: letters, digits, dots, underscores
+        match = re.search(r'~\s*([\w.]+)', formula)
+        if match:
+            return match.group(1)
+        raise ValueError(
+            f"Could not parse treatment variable from formula '{formula}'. "
+            "Expected format: 'outcome ~ treatment'."
+        )
+
     def goodman_bacon_decomposition(
         self,
         data: pd.DataFrame,
@@ -96,16 +120,7 @@ class REstimators:
         try:
             logger.info("Running Goodman-Bacon decomposition")
 
-            # Parse formula to extract treatment variable
-            import re
-            match = re.search(r'~\s*([\w.]+)', formula)
-            if not match:
-                return {
-                    "status": "error",
-                    "message": "Could not parse treatment variable from formula"
-                }
-            
-            treatment_var = match.group(1)
+            treatment_var = self.parse_treatment_from_formula(formula)
             
             # Prepare data with corrected treatment variable for Goodman-Bacon
             data_corrected = self._prepare_data_for_bacon(
@@ -198,16 +213,15 @@ class REstimators:
                         
             except Exception as e:
                 logger.error(f"Error extracting bacon results: {e}")
-                # Try to at least get the decomposition DataFrame
                 try:
-                    # If we can't process it, return the raw dataframe info
-                    return {
-                        "status": "partial",
-                        "message": f"Bacon ran but extraction failed: {e}",
-                        "raw_output": str(result)
-                    }
+                    raw = str(result)
                 except Exception:
-                    raise e
+                    raw = "<unavailable>"
+                return {
+                    "status": "partial",
+                    "message": f"Bacon ran but extraction failed: {e}",
+                    "raw_output": raw
+                }
             
             return {
                 "status": "success",

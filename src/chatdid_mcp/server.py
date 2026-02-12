@@ -537,7 +537,7 @@ async def workflow(
         treatment_col: Column name for treatment indicator
         cohort_col: Column name for treatment cohort (optional)
         method: Estimation method ("auto", "callaway_santanna", "sun_abraham",
-                "imputation_bjs", "gardner", "dcdh", "gsynth", "synthdid",
+                "bjs_imputation", "gardner", "dcdh", "gsynth", "synthdid",
                 "drdid", "etwfe")
                 Note: "efficient" is DISABLED due to systematic issues.
         cluster_level: Variable for clustering standard errors
@@ -547,13 +547,13 @@ async def workflow(
 
     Note:
         Results Storage: Workflow results are stored with "workflow_" prefix.
-        - Primary method results: "workflow_{method}" (e.g., "workflow_imputation_bjs")
+        - Primary method results: "workflow_{method}" (e.g., "workflow_bjs_imputation")
         - Robustness check results: "workflow_{robustness_method}"
         - Primary for inference: "latest" (points to the primary estimator;
           Steps 4-5 read this for parallel trends assessment and final inference)
 
         Export Results: Use export_results(results_key="latest") or
-        export_results(results_key="workflow_imputation_bjs") to access workflow results.
+        export_results(results_key="workflow_bjs_imputation") to access workflow results.
     """
     try:
         # Update analyzer config
@@ -803,11 +803,10 @@ async def diagnose_goodman_bacon(
         if err := _require_r(): return err
 
         # Extract treatment variable from formula to feed into preprocessing.
-        import re
-        match = re.search(r'~\s*([\w.]+)', formula)
-        if not match:
-            return "Error: Could not parse treatment variable from formula. Expected 'outcome ~ treatment'."
-        treatment_var = match.group(1)
+        try:
+            treatment_var = get_analyzer().r_estimators.parse_treatment_from_formula(formula)
+        except ValueError as e:
+            return f"Error: {e}"
 
         # Preprocess through the single source of truth — resolves the
         # canonical cohort column, normalizes never-treated encoding to 0,
@@ -2119,6 +2118,11 @@ async def create_event_study_plot(
     """
     try:
         # Import MCP types at runtime to avoid startup conflicts
+        try:
+            from mcp.types import TextContent
+        except ImportError:
+            TextContent = None
+
         # Determine display mode based on parameter
         display_mode = "both" if display_inline else "save"
 
@@ -2562,7 +2566,7 @@ async def export_results(
             - Methods called via workflow(): Use "workflow_" prefix
               - "workflow_callaway_santanna"
               - "workflow_sun_abraham"
-              - "workflow_imputation_bjs"
+              - "workflow_bjs_imputation"
               - etc.
 
             Tip: Use "latest" to export the primary estimation results.
@@ -2764,7 +2768,7 @@ async def export_comparison(
             - Methods called via workflow(): Use "workflow_" prefix
               - "workflow_callaway_santanna"
               - "workflow_sun_abraham"
-              - "workflow_imputation_bjs"
+              - "workflow_bjs_imputation"
               - etc.
 
             Tip: Set methods=None to automatically compare all available results.
@@ -2835,20 +2839,24 @@ Available methods:
 Tip: Use methods=None to export all available methods.
 """
 
+        # Fetch diagnostics when requested
+        diagnostics = analyzer.diagnostics if include_diagnostics else None
+
         # Format comparison table based on format
         if format == "markdown":
-            content = _format_comparison_as_markdown(
-                comparison_data, include_diagnostics
-            )
+            content = _format_comparison_as_markdown(comparison_data, diagnostics)
             extension = "md"
         elif format == "latex":
-            content = _format_comparison_as_latex(comparison_data, include_diagnostics)
+            content = _format_comparison_as_latex(comparison_data, diagnostics)
             extension = "tex"
         elif format == "csv":
-            content = _format_comparison_as_csv(comparison_data, include_diagnostics)
+            content = _format_comparison_as_csv(comparison_data, diagnostics)
             extension = "csv"
         elif format == "json":
-            content = json.dumps(comparison_data, indent=2, default=str)
+            export_obj = {"comparison": comparison_data}
+            if diagnostics:
+                export_obj["diagnostics"] = diagnostics
+            content = json.dumps(export_obj, indent=2, default=str)
             extension = "json"
         else:
             return f"Error: Unsupported format '{format}'. Use: markdown, latex, csv, or json"
@@ -3503,8 +3511,27 @@ def _format_results_as_excel(data: Dict) -> bytes:
 # =============================================================================
 
 
+def _format_comparison_diagnostics_markdown(diagnostics: Dict[str, Any]) -> str:
+    """Format TWFE diagnostics section for markdown comparison export."""
+    lines = ["", "## TWFE Diagnostics", ""]
+    bacon = diagnostics.get("bacon_decomp", {})
+    if bacon:
+        if "overall_estimate" in bacon:
+            lines.append(f"- TWFE Overall Estimate: {bacon['overall_estimate']:.4f}")
+        if "forbidden_comparison_weight" in bacon:
+            lines.append(f"- Forbidden Comparison Weight: {bacon['forbidden_comparison_weight']*100:.1f}%")
+    weights = diagnostics.get("twfe_weights", {})
+    if weights:
+        if "negative_weight_share" in weights:
+            lines.append(f"- Negative Weight Share: {weights['negative_weight_share']*100:.1f}%")
+    if len(lines) == 3:
+        lines.append("- No diagnostic data available")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _format_comparison_as_markdown(
-    comparison_data: Dict[str, Dict], include_diagnostics: bool = False
+    comparison_data: Dict[str, Dict], diagnostics: Optional[Dict[str, Any]] = None
 ) -> str:
     """Format method comparison as Markdown table."""
     output = []
@@ -3610,6 +3637,9 @@ def _format_comparison_as_markdown(
                 row += cell
             output.append(row)
 
+    if diagnostics:
+        output.append(_format_comparison_diagnostics_markdown(diagnostics))
+
     output.append("")
     output.append("---")
     output.append("")
@@ -3622,7 +3652,7 @@ def _format_comparison_as_markdown(
 
 
 def _format_comparison_as_latex(
-    comparison_data: Dict[str, Dict], include_diagnostics: bool = False
+    comparison_data: Dict[str, Dict], diagnostics: Optional[Dict[str, Any]] = None
 ) -> str:
     """Format method comparison as LaTeX table."""
     output = []
@@ -3762,11 +3792,26 @@ def _format_comparison_as_latex(
         output.append("\\end{tabular}")
         output.append("\\end{table}")
 
+    if diagnostics:
+        output.append("")
+        output.append("% TWFE Diagnostics")
+        bacon = diagnostics.get("bacon_decomp", {})
+        weights = diagnostics.get("twfe_weights", {})
+        notes = []
+        if "overall_estimate" in bacon:
+            notes.append(f"TWFE estimate: {bacon['overall_estimate']:.4f}")
+        if "forbidden_comparison_weight" in bacon:
+            notes.append(f"forbidden comparison weight: {bacon['forbidden_comparison_weight']*100:.1f}\\%")
+        if "negative_weight_share" in weights:
+            notes.append(f"negative weight share: {weights['negative_weight_share']*100:.1f}\\%")
+        if notes:
+            output.append(f"% {'; '.join(notes)}")
+
     return "\n".join(output)
 
 
 def _format_comparison_as_csv(
-    comparison_data: Dict[str, Dict], include_diagnostics: bool = False
+    comparison_data: Dict[str, Dict], diagnostics: Optional[Dict[str, Any]] = None
 ) -> str:
     """Format method comparison as CSV."""
     import pandas as pd
@@ -3833,6 +3878,20 @@ def _format_comparison_as_csv(
             df_event = pd.DataFrame(event_study_data)
             output.write("# Event Study Comparison\n")
             df_event.to_csv(output, index=False)
+
+    if diagnostics:
+        output.write("\n# TWFE Diagnostics\n")
+        diag_rows = []
+        bacon = diagnostics.get("bacon_decomp", {})
+        weights = diagnostics.get("twfe_weights", {})
+        if "overall_estimate" in bacon:
+            diag_rows.append({"metric": "twfe_estimate", "value": bacon["overall_estimate"]})
+        if "forbidden_comparison_weight" in bacon:
+            diag_rows.append({"metric": "forbidden_comparison_weight", "value": bacon["forbidden_comparison_weight"]})
+        if "negative_weight_share" in weights:
+            diag_rows.append({"metric": "negative_weight_share", "value": weights["negative_weight_share"]})
+        if diag_rows:
+            pd.DataFrame(diag_rows).to_csv(output, index=False)
 
     return output.getvalue()
 

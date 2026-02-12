@@ -345,7 +345,7 @@ class DiDWorkflow:
         - "auto": Automatically select based on diagnostics
         - "callaway_santanna": CS estimator
         - "sun_abraham": SA estimator
-        - "imputation_bjs": BJS imputation
+        - "bjs_imputation": BJS imputation
         - "gardner": Gardner two-stage
         - "dcdh": de Chaisemartin & D'Haultfoeuille estimator
         - "gsynth": Generalized synthetic control (Xu 2017)
@@ -364,8 +364,9 @@ class DiDWorkflow:
 
         # Auto-select method based on diagnostics and severity bands
         if method == "auto":
-            if self.workflow_state["diagnostics"]:
-                severity = self.workflow_state["diagnostics"].get("severity_assessment", {})
+            diag = self.workflow_state.get("diagnostics")
+            if diag and diag.get("status") != "error":
+                severity = diag.get("severity_assessment", {})
                 overall_severity = severity.get("overall_severity", "MINIMAL")
 
                 if overall_severity in ("SEVERE", "MODERATE"):
@@ -373,11 +374,12 @@ class DiDWorkflow:
                 elif overall_severity == "MILD":
                     method = "sun_abraham"  # Fast and convenient
                 else:
-                    method = "imputation_bjs"  # Efficient when TWFE bias is minimal
+                    method = "bjs_imputation"  # Efficient when TWFE bias is minimal
 
                 logger.info(f"Auto-selected method '{method}' based on severity: {overall_severity}")
             else:
-                method = "callaway_santanna"  # Safe default
+                # Diagnostics unavailable or failed — use safest default
+                method = "callaway_santanna"
 
         # Define robustness check method pairing (following best practices)
         # Note: "efficient" estimator is DISABLED due to systematic issues (see KNOWN_ISSUES.md)
@@ -389,7 +391,7 @@ class DiDWorkflow:
         robustness_pairs = {
             "callaway_santanna": "sun_abraham",
             "sun_abraham": "callaway_santanna",
-            "imputation_bjs": "gardner",
+            "bjs_imputation": "gardner",
             "gardner": "sun_abraham",
             "dcdh": "callaway_santanna",
             "gsynth": "callaway_santanna",
@@ -600,12 +602,22 @@ class DiDWorkflow:
         results["workflow_steps"].append({"step": 1, "result": step1})
         
         if step1["status"] != "success":
+            results["status"] = "failed"
+            results["failed_step"] = 1
             return results
         
-        # Step 2: Diagnose if staggered
+        # Step 2: Diagnose if staggered (informative, not blocking —
+        # diagnostics inform method choice but have a safe fallback)
         if step1["is_staggered"]:
             step2 = await self.step2_diagnose_twfe_complete()
             results["workflow_steps"].append({"step": 2, "result": step2})
+            if step2.get("status") == "error":
+                warning = (
+                    f"Step 2 (diagnostics) failed: {step2.get('message', 'unknown')}. "
+                    "Using conservative estimator (Callaway & Sant'Anna) as fallback."
+                )
+                logger.warning(warning)
+                results.setdefault("warnings", []).append(warning)
         
         # Step 3: Apply estimator (BLOCKING — estimation is required for steps 4-5)
         step3 = await self.step3_apply_robust_estimator(method=method)
@@ -636,6 +648,28 @@ class DiDWorkflow:
         
         return results
     
+    @staticmethod
+    def _format_att_block(heading: Optional[str], result: Dict[str, Any]) -> str:
+        """Format an ATT result block for the final report."""
+        lines = []
+        if heading:
+            lines.append(f"{heading}:\n")
+        att = result.get("overall_att", {})
+        if isinstance(att, dict):
+            if "estimate" in att:
+                lines.append(f"- Overall ATT: {att['estimate']:.4f}\n")
+            if "se" in att:
+                lines.append(f"- Standard Error: {att['se']:.4f}\n")
+            if "ci_lower" in att and "ci_upper" in att:
+                lines.append(f"- 95% CI: [{att['ci_lower']:.4f}, {att['ci_upper']:.4f}]\n")
+            if "pvalue" in att:
+                lines.append(f"- P-value: {att['pvalue']:.4f}\n")
+        elif "overall_att" in result:
+            lines.append(f"- Overall ATT: {result['overall_att']:.4f}\n")
+        if "n_treated" in result:
+            lines.append(f"- Treated Units: {result['n_treated']}\n")
+        return "".join(lines)
+
     def _generate_final_report(self) -> str:
         """Generate a comprehensive final report with severity bands and evidence assessment."""
         report = """
@@ -644,120 +678,92 @@ class DiDWorkflow:
 """
         # Add details from each step
         for i, step_name in enumerate(["staggered", "diagnostics", "estimation", "parallel_trends", "inference"], 1):
-            if self.workflow_state.get(step_name):
-                report += f"\nStep {i}: {'Completed' if self.workflow_state[step_name] else 'Skipped'}\n"
+            if step_name not in self.workflow_state:
+                continue
 
-                # Add specific details for important steps
-                if step_name == "staggered" and self.workflow_state[step_name]:
-                    is_staggered = self.workflow_state.get("staggered", False)
-                    report += f"- Treatment Type: {'Staggered' if is_staggered else 'Non-staggered'}\n"
+            step_data = self.workflow_state[step_name]
 
-                elif step_name == "diagnostics" and self.workflow_state.get("diagnostics"):
-                    diag = self.workflow_state["diagnostics"]
-                    diag_data = diag.get("diagnostics", {})
-                    if "bacon_decomp" in diag_data:
-                        bacon = diag_data["bacon_decomp"]
-                        if "overall_estimate" in bacon:
-                            report += f"- TWFE Estimate: {bacon['overall_estimate']:.4f}\n"
-                        if "forbidden_comparison_weight" in bacon:
-                            report += f"- Forbidden Comparisons: {bacon['forbidden_comparison_weight']*100:.1f}%\n"
+            # None means the step was never executed (e.g. diagnostics
+            # skipped for non-staggered designs).
+            if step_data is None:
+                continue
 
-                    # Add severity assessment (from DID skill)
-                    severity = diag.get("severity_assessment", {})
-                    if severity:
-                        report += f"\nTWFE Bias Severity Assessment:\n"
-                        report += f"- Forbidden Weight Severity: {severity.get('forbidden_weight_severity', 'N/A')} ({severity.get('forbidden_weight_pct', 'N/A')}%)\n"
-                        report += f"- Negative Weight Severity: {severity.get('negative_weight_severity', 'N/A')} ({severity.get('negative_weight_pct', 'N/A')}%)\n"
-                        report += f"- Overall Severity: {severity.get('overall_severity', 'N/A')}\n"
-                        report += f"- Recommendation: {severity.get('recommendation', 'N/A')}\n"
-                
-                elif step_name == "estimation" and self.workflow_state.get("estimation"):
-                    est = self.workflow_state["estimation"]
-                    if est.get("status") == "success":
-                        # Check if this is dual-estimation result (with robustness check)
-                        if "primary_method" in est and "robustness_method" in est:
-                            # Dual estimation result
-                            report += f"- Primary Method: {est['primary_method']}\n"
-                            report += f"- Robustness Check Method: {est['robustness_method']}\n\n"
+            # Determine step status: dicts with status="error" are failures;
+            # "staggered" is a bool (True/False), always a valid result.
+            if isinstance(step_data, dict) and step_data.get("status") == "error":
+                report += f"\nStep {i}: Failed\n"
+                report += f"- {step_data.get('message', 'Unknown error')}\n"
+                continue
 
-                            # Primary estimation results
-                            primary = est.get("primary_estimation", {})
-                            if primary.get("status") == "success":
-                                report += f"Primary Estimator Results:\n"
-                                primary_att = primary.get("overall_att", {})
-                                if isinstance(primary_att, dict):
-                                    if "estimate" in primary_att:
-                                        report += f"- Overall ATT: {primary_att['estimate']:.4f}\n"
-                                    if "se" in primary_att:
-                                        report += f"- Standard Error: {primary_att['se']:.4f}\n"
-                                    if "ci_lower" in primary_att and "ci_upper" in primary_att:
-                                        report += f"- 95% CI: [{primary_att['ci_lower']:.4f}, {primary_att['ci_upper']:.4f}]\n"
-                                    if "pvalue" in primary_att:
-                                        report += f"- P-value: {primary_att['pvalue']:.4f}\n"
+            report += f"\nStep {i}: Completed\n"
 
-                            # Robustness check results
-                            robustness = est.get("robustness_estimation", {})
-                            if robustness.get("status") == "success":
-                                report += f"\nRobustness Check Results:\n"
-                                robustness_att = robustness.get("overall_att", {})
-                                if isinstance(robustness_att, dict):
-                                    if "estimate" in robustness_att:
-                                        report += f"- Overall ATT: {robustness_att['estimate']:.4f}\n"
-                                    if "se" in robustness_att:
-                                        report += f"- Standard Error: {robustness_att['se']:.4f}\n"
-                                    if "ci_lower" in robustness_att and "ci_upper" in robustness_att:
-                                        report += f"- 95% CI: [{robustness_att['ci_lower']:.4f}, {robustness_att['ci_upper']:.4f}]\n"
+            # Add specific details for important steps
+            if step_name == "staggered":
+                report += f"- Treatment Type: {'Staggered' if step_data else 'Non-staggered'}\n"
 
-                            # Comparison results
-                            comparison = est.get("comparison", {})
-                            if comparison:
-                                report += f"\nRobustness Comparison:\n"
-                                if "att_difference" in comparison:
-                                    report += f"- Absolute Difference: {comparison['att_difference']:.4f}\n"
-                                if "relative_difference_pct" in comparison:
-                                    report += f"- Relative Difference: {comparison['relative_difference_pct']:.2f}%\n"
-                                if "consistent" in comparison:
-                                    consistency = "Consistent" if comparison["consistent"] else "Inconsistent"
-                                    report += f"- Consistency: {consistency}\n"
-                                if "ci_overlap" in comparison:
-                                    ci_status = "Yes" if comparison["ci_overlap"] else "No"
-                                    report += f"- Confidence Intervals Overlap: {ci_status}\n"
-                        else:
-                            # Single estimation result (legacy format)
-                            report += f"- Method: {est.get('method', 'Unknown')}\n"
-                            if "overall_att" in est:
-                                att = est["overall_att"]
-                                if isinstance(att, dict):
-                                    if "estimate" in att:
-                                        report += f"- Overall ATT: {att['estimate']:.4f}\n"
-                                    if "se" in att:
-                                        report += f"- Standard Error: {att['se']:.4f}\n"
-                                    if "ci_lower" in att and "ci_upper" in att:
-                                        report += f"- 95% CI: [{att['ci_lower']:.4f}, {att['ci_upper']:.4f}]\n"
-                                    if "pvalue" in att:
-                                        report += f"- P-value: {att['pvalue']:.4f}\n"
-                                else:
-                                    report += f"- Overall ATT: {est['overall_att']:.4f}\n"
-                            if "n_treated" in est:
-                                report += f"- Treated Units: {est['n_treated']}\n"
-                
-                elif step_name == "parallel_trends" and self.workflow_state.get("parallel_trends"):
-                    pt = self.workflow_state["parallel_trends"]
-                    components = pt.get("analysis_components", {})
+            elif step_name == "diagnostics":
+                diag_data = step_data.get("diagnostics", {})
+                if "bacon_decomp" in diag_data:
+                    bacon = diag_data["bacon_decomp"]
+                    if "overall_estimate" in bacon:
+                        report += f"- TWFE Estimate: {bacon['overall_estimate']:.4f}\n"
+                    if "forbidden_comparison_weight" in bacon:
+                        report += f"- Forbidden Comparisons: {bacon['forbidden_comparison_weight']*100:.1f}%\n"
 
-                    formal_test = components.get("formal_test", {}).get("results") or {}
-                    if formal_test:
-                        report += f"- Pre-trends Test p-value: {formal_test.get('p_value', 'N/A')}\n"
+                severity = step_data.get("severity_assessment", {})
+                if severity:
+                    report += f"\nTWFE Bias Severity Assessment:\n"
+                    report += f"- Forbidden Weight Severity: {severity.get('forbidden_weight_severity', 'N/A')} ({severity.get('forbidden_weight_pct', 'N/A')}%)\n"
+                    report += f"- Negative Weight Severity: {severity.get('negative_weight_severity', 'N/A')} ({severity.get('negative_weight_pct', 'N/A')}%)\n"
+                    report += f"- Overall Severity: {severity.get('overall_severity', 'N/A')}\n"
+                    report += f"- Recommendation: {severity.get('recommendation', 'N/A')}\n"
 
-                    power = components.get("power_analysis", {}).get("results") or {}
-                    if power and "80%" in power:
-                        report += f"- Power at 80%: Min detectable slope = {power['80%'].get('minimal_detectable_slope', 'N/A')}\n"
+            elif step_name == "estimation":
+                est = step_data
+                if est.get("status") == "success":
+                    if "primary_method" in est and "robustness_method" in est:
+                        report += f"- Primary Method: {est['primary_method']}\n"
+                        report += f"- Robustness Check Method: {est['robustness_method']}\n\n"
 
-                    sensitivity = components.get("sensitivity_analysis", {}).get("results") or {}
-                    if sensitivity and sensitivity.get("status") == "success":
-                        bp = sensitivity.get("breakdown_point")
-                        bp_str = f"M = {bp}" if bp is not None else "None (robust to all tested M)"
-                        report += f"- HonestDiD Breakdown Point: {bp_str}\n"
+                        primary = est.get("primary_estimation", {})
+                        if primary.get("status") == "success":
+                            report += self._format_att_block("Primary Estimator Results", primary)
+
+                        robustness = est.get("robustness_estimation", {})
+                        if robustness.get("status") == "success":
+                            report += self._format_att_block("\nRobustness Check Results", robustness)
+
+                        comparison = est.get("comparison", {})
+                        if comparison:
+                            report += f"\nRobustness Comparison:\n"
+                            if "att_difference" in comparison:
+                                report += f"- Absolute Difference: {comparison['att_difference']:.4f}\n"
+                            if "relative_difference_pct" in comparison:
+                                report += f"- Relative Difference: {comparison['relative_difference_pct']:.2f}%\n"
+                            if "consistent" in comparison:
+                                report += f"- Consistency: {'Consistent' if comparison['consistent'] else 'Inconsistent'}\n"
+                            if "ci_overlap" in comparison:
+                                report += f"- Confidence Intervals Overlap: {'Yes' if comparison['ci_overlap'] else 'No'}\n"
+                    else:
+                        report += f"- Method: {est.get('method', 'Unknown')}\n"
+                        report += self._format_att_block(None, est)
+
+            elif step_name == "parallel_trends":
+                components = step_data.get("analysis_components", {})
+
+                formal_test = components.get("formal_test", {}).get("results") or {}
+                if formal_test:
+                    report += f"- Pre-trends Test p-value: {formal_test.get('p_value', 'N/A')}\n"
+
+                power = components.get("power_analysis", {}).get("results") or {}
+                if power and "80%" in power:
+                    report += f"- Power at 80%: Min detectable slope = {power['80%'].get('minimal_detectable_slope', 'N/A')}\n"
+
+                sensitivity = components.get("sensitivity_analysis", {}).get("results") or {}
+                if sensitivity and sensitivity.get("status") == "success":
+                    bp = sensitivity.get("breakdown_point")
+                    bp_str = f"M = {bp}" if bp is not None else "None (robust to all tested M)"
+                    report += f"- HonestDiD Breakdown Point: {bp_str}\n"
 
         # Add Evidence Assessment section
         evidence = self.assess_evidence()

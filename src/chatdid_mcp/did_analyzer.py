@@ -196,7 +196,7 @@ class DiDAnalyzer:
                     import pyreadstat
                     self.data, _ = pyreadstat.read_dta(file_path)
                 except ImportError:
-                    raise ImportError("pyreadstat required for Stata files")
+                    raise ImportError("pyreadstat required for Stata files") from None
             elif file_type in ["parquet"]:
                 self.data = pd.read_parquet(file_path)
             else:
@@ -410,7 +410,7 @@ class DiDAnalyzer:
                 formula=formula,
                 cluster_var=kwargs.get('cluster_var', self.config['unit_col'])
             )
-        elif method == "imputation_bjs":
+        elif method == "bjs_imputation":
             return self.r_estimators.bjs_imputation_estimator(
                 data=self.data,
                 outcome_col=self.config['outcome_col'],
@@ -440,7 +440,7 @@ class DiDAnalyzer:
             )
         elif method == "efficient":
             # EFFICIENT ESTIMATOR IS DISABLED
-            logger.warning("Efficient estimator is disabled due to systematic issues. Falling back to imputation_bjs.")
+            logger.warning("Efficient estimator is disabled due to systematic issues. Falling back to bjs_imputation.")
             return {
                 "status": "error",
                 "message": "Efficient estimator is disabled due to systematic issues observed across multiple datasets. "
@@ -982,6 +982,18 @@ class DiDAnalyzer:
         
         return recommendations
 
+    @staticmethod
+    def _prefixed_path(save_path: str, prefix: str) -> str:
+        """Prepend a prefix to the filename component of a path.
+
+        Correctly handles absolute paths, directories, and plain filenames:
+            _prefixed_path("/tmp/plot.png", "bacon") -> "/tmp/bacon_plot.png"
+            _prefixed_path("plot.png", "bacon")      -> "bacon_plot.png"
+        """
+        from pathlib import Path
+        p = Path(save_path)
+        return str(p.parent / f"{prefix}_{p.name}")
+
     def _resolve_results_key(self, results_key: str) -> Dict[str, Any]:
         """Resolve a results_key to the corresponding estimation results.
 
@@ -1093,7 +1105,7 @@ class DiDAnalyzer:
         if "bacon_decomp" in self.diagnostics:
             bacon_plot = self.visualizer.create_goodman_bacon_plot(
                 bacon_results=self.diagnostics["bacon_decomp"],
-                save_path=f"bacon_{save_path}" if save_path else None
+                save_path=self._prefixed_path(save_path, "bacon") if save_path else None
             )
             plots["goodman_bacon"] = bacon_plot
 
@@ -1101,7 +1113,7 @@ class DiDAnalyzer:
         if "twfe_weights" in self.diagnostics:
             weights_plot = self.visualizer.create_twfe_weights_plot(
                 weights_results=self.diagnostics["twfe_weights"],
-                save_path=f"weights_{save_path}" if save_path else None
+                save_path=self._prefixed_path(save_path, "weights") if save_path else None
             )
             plots["twfe_weights"] = weights_plot
 

@@ -63,7 +63,7 @@ class SensitivityAnalysisParams(BaseModel):
                 else:
                     raise ValueError("m_values string must represent a JSON array")
             except json.JSONDecodeError as e:
-                raise ValueError(f"Cannot parse m_values as JSON: {e}")
+                raise ValueError(f"Cannot parse m_values as JSON: {e}") from e
 
         if isinstance(v, list):
             if all(isinstance(x, (int, float)) for x in v):
