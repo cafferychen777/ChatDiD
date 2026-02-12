@@ -607,20 +607,32 @@ class DiDWorkflow:
             step2 = await self.step2_diagnose_twfe_complete()
             results["workflow_steps"].append({"step": 2, "result": step2})
         
-        # Step 3: Apply estimator
+        # Step 3: Apply estimator (BLOCKING — estimation is required for steps 4-5)
         step3 = await self.step3_apply_robust_estimator(method=method)
         results["workflow_steps"].append({"step": 3, "result": step3})
-        
-        # Step 4: Assess parallel trends
+
+        if step3.get("status") != "success":
+            results["status"] = "failed"
+            results["failed_step"] = 3
+            return results
+
+        # Step 4: Assess parallel trends (non-blocking — informative assessment)
         step4 = await self.step4_assess_parallel_trends()
         results["workflow_steps"].append({"step": 4, "result": step4})
-        
+
+        if step4.get("status") != "success":
+            logger.warning(f"Step 4 (parallel trends) did not succeed: {step4.get('message', 'unknown')}")
+
         # Step 5: Finalize inference
         step5 = await self.step5_finalize_inference(cluster_level=cluster_level)
         results["workflow_steps"].append({"step": 5, "result": step5})
-        
-        results["status"] = "complete"
-        results["final_report"] = step5.get("report", "")
+
+        if step5.get("status") == "success":
+            results["status"] = "complete"
+            results["final_report"] = step5.get("report", "")
+        else:
+            results["status"] = "failed"
+            results["failed_step"] = 5
         
         return results
     

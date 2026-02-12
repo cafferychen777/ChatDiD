@@ -149,6 +149,95 @@ def _store_estimation(method_name: str, result: Dict[str, Any]) -> None:
     logger.info(f"Stored {method_name} estimation results")
 
 
+# ---------------------------------------------------------------------------
+# Response formatting helpers — single source of truth for common output
+# blocks across estimation tools.  Changes to format, thresholds, or
+# terminology only need to happen here.
+# ---------------------------------------------------------------------------
+
+
+def _format_overall_att(
+    result: Dict[str, Any],
+    label: str = "Overall Average Treatment Effect",
+) -> str:
+    """Format the Overall ATT section.  Returns empty string if absent."""
+    if "overall_att" not in result:
+        return ""
+    overall = result["overall_att"]
+    parts = [f"{label}\n"]
+    parts.append(f"- Estimate: {overall['estimate']:.4f}")
+    if overall.get("se") is not None:
+        parts.append(f"- Std. Error: {overall['se']:.4f}")
+    if overall.get("ci_lower") is not None and overall.get("ci_upper") is not None:
+        parts.append(f"- 95% CI: [{overall['ci_lower']:.4f}, {overall['ci_upper']:.4f}]")
+    if overall.get("pvalue") is not None:
+        parts.append(f"- p-value: {overall['pvalue']:.4f}")
+    return "\n".join(parts) + "\n\n"
+
+
+def _format_event_study_table(
+    result: Dict[str, Any],
+    show_ci: bool = True,
+) -> str:
+    """Format event study estimates as a markdown table."""
+    event_study = result.get("event_study")
+    if not event_study:
+        return ""
+    lines = ["Event Study Estimates\n"]
+    if show_ci:
+        lines.append("| Event Time | Estimate | Std. Error | 95% CI | p-value |")
+        lines.append("|------------|----------|------------|--------|----------|")
+        for e, est in sorted(event_study.items()):
+            lines.append(
+                f"| {e:^10} | {est['estimate']:^8.4f} | {est['se']:^10.4f} | "
+                f"[{est['ci_lower']:.3f}, {est['ci_upper']:.3f}] | {est['pvalue']:.4f} |"
+            )
+    else:
+        lines.append("| Event Time | Estimate | Std. Error | p-value |")
+        lines.append("|------------|----------|------------|----------|")
+        for e, est in sorted(event_study.items()):
+            lines.append(
+                f"| {e} | {est['estimate']:.4f} | {est['se']:.4f} | {est['pvalue']:.4f} |"
+            )
+    return "\n".join(lines) + "\n"
+
+
+def _format_pretrends_check(result: Dict[str, Any]) -> str:
+    """Check pre-period event study estimates for significant effects."""
+    event_study = result.get("event_study")
+    if not event_study:
+        return ""
+    pre_period = [est for e, est in event_study.items() if e < 0]
+    if not pre_period:
+        return ""
+    sig_count = sum(1 for est in pre_period if est["pvalue"] < 0.05)
+    if sig_count > 0:
+        return (
+            f"\nWarning: {sig_count} pre-treatment periods show significant effects\n"
+            "This may indicate violations of parallel trends assumption.\n"
+        )
+    return "\nNo significant pre-trends detected\n"
+
+
+def _format_significance(result: Dict[str, Any]) -> str:
+    """Format statistical significance interpretation of overall ATT."""
+    overall = result.get("overall_att")
+    if not overall:
+        return ""
+    pvalue = overall.get("pvalue")
+    if pvalue is not None:
+        significant = pvalue < 0.05
+    elif overall.get("se") is not None and overall["se"] != 0:
+        # Fallback: compute z-stat when p-value is not available (gsynth, synthdid)
+        z_stat = abs(overall["estimate"] / overall["se"])
+        significant = z_stat > 1.96
+    else:
+        return ""
+    if significant:
+        return "\nStatistically significant treatment effect detected\n"
+    return "\nNo statistically significant treatment effect at 5% level\n"
+
+
 # =============================================================================
 # TOOLS - Using FastMCP decorators
 # =============================================================================
@@ -728,11 +817,11 @@ async def diagnose_goodman_bacon(
         )
         actual_cohort_col = processed["gname"]
 
-        # Run Goodman-Bacon decomposition with the resolved cohort column
+        # Run Goodman-Bacon decomposition with preprocessed columns
         result = get_analyzer().r_estimators.goodman_bacon_decomposition(
             data=get_analyzer().data,
             formula=formula,
-            id_var=id_var,
+            id_var=processed["idname"],
             time_var=time_var,
             cohort_col=actual_cohort_col,
         )
@@ -840,6 +929,7 @@ async def analyze_twfe_weights(
     """
     try:
         if err := _require_data(): return err
+        if err := _require_r(): return err
         analyzer = get_analyzer()
 
         # Call R estimator for weights analysis
@@ -1016,34 +1106,10 @@ async def estimate_callaway_santanna(
         response += f"Method: Doubly Robust DID\n"
         response += f"Control Group: {result['control_group']}\n"
         response += f"Aggregation: Group (official recommendation)\n\n"
-
-        # Overall ATT
-        overall = result["overall_att"]
-        response += "Overall Average Treatment Effect\n\n"
-        response += f"- Estimate: {overall['estimate']:.4f}\n"
-        response += f"- Std. Error: {overall['se']:.4f}\n"
-        response += (
-            f"- 95% CI: [{overall['ci_lower']:.4f}, {overall['ci_upper']:.4f}]\n"
-        )
-        response += f"- p-value: {overall['pvalue']:.4f}\n"
-        response += f"- Source: type='group' aggregation\n\n"
-
-        # Event study
-        response += "Event Study Estimates\n\n"
-        response += "| Event Time | Estimate | Std. Error | 95% CI | p-value |\n"
-        response += "|------------|----------|------------|--------|----------|\n"
-
-        for e, est in sorted(result["event_study"].items()):
-            response += f"| {e:^10} | {est['estimate']:^8.4f} | {est['se']:^10.4f} | "
-            response += f"[{est['ci_lower']:.3f}, {est['ci_upper']:.3f}] | {est['pvalue']:.4f} |\n"
-
-        # Interpretation
-        if overall["pvalue"] < 0.05:
-            response += "\nStatistically significant treatment effect detected\n"
-        else:
-            response += (
-                "\nNo statistically significant treatment effect at 5% level\n"
-            )
+        response += _format_overall_att(result)
+        response += _format_event_study_table(result)
+        response += _format_pretrends_check(result)
+        response += _format_significance(result)
 
         return response
 
@@ -1095,41 +1161,11 @@ async def estimate_sun_abraham(formula: str, cluster_var: Optional[str] = None) 
 
         # Format results
         response = "# Sun & Abraham (2021) Results\n\n"
-        response += f"Method: Interaction-Weighted Estimator\n\n"
-
-        # Overall ATT (if available)
-        if "overall_att" in result:
-            overall = result["overall_att"]
-            response += "Overall Average Treatment Effect\n\n"
-            response += f"- Estimate: {overall['estimate']:.4f}\n"
-            response += f"- Std. Error: {overall['se']:.4f}\n"
-            response += f"- 95% CI: [{overall['ci_lower']:.4f}, {overall['ci_upper']:.4f}]\n"
-            response += f"- p-value: {overall['pvalue']:.4f}\n\n"
-
-        # Event study
-        response += "Event Study Estimates\n\n"
-        response += "| Event Time | Estimate | Std. Error | 95% CI | p-value |\n"
-        response += "|------------|----------|------------|--------|----------|\n"
-
-        for e, est in sorted(result["event_study"].items()):
-            response += f"| {e:^10} | {est['estimate']:^8.4f} | {est['se']:^10.4f} | "
-            response += f"[{est['ci_lower']:.3f}, {est['ci_upper']:.3f}] | {est['pvalue']:.4f} |\n"
-
-        # Check for pre-trends
-        pre_period_estimates = [
-            est for e, est in result["event_study"].items() if e < 0
-        ]
-        if pre_period_estimates:
-            significant_pretrends = sum(
-                1 for est in pre_period_estimates if est["pvalue"] < 0.05
-            )
-            if significant_pretrends > 0:
-                response += f"\nWarning: {significant_pretrends} pre-treatment periods show significant effects\n"
-                response += (
-                    "This may indicate violations of parallel trends assumption.\n"
-                )
-            else:
-                response += "\nNo significant pre-trends detected\n"
+        response += "Method: Interaction-Weighted Estimator\n\n"
+        response += _format_overall_att(result)
+        response += _format_event_study_table(result)
+        response += _format_pretrends_check(result)
+        response += _format_significance(result)
 
         return response
 
@@ -1209,60 +1245,22 @@ async def estimate_bjs_imputation(
         response = "# Borusyak, Jaravel & Spiess (2024) Results\n\n"
         response += f"Method: Imputation Estimator\n"
         response += f"Horizon: {horizon} periods\n\n"
+        response += _format_overall_att(result)
+        response += _format_event_study_table(result)
 
-        # Overall ATT if available
-        if "overall_att" in result:
-            overall = result["overall_att"]
-            response += "Overall Average Treatment Effect\n\n"
-            response += f"- Estimate: {overall['estimate']:.4f}\n"
-            response += f"- Std. Error: {overall['se']:.4f}\n"
-            response += f"- 95% CI: [{overall['ci_lower']:.4f}, {overall['ci_upper']:.4f}]\n"
-            response += f"- p-value: {overall['pvalue']:.4f}\n\n"
-
-        # Event study
-        response += "Event Study Estimates\n\n"
-        response += "| Event Time | Estimate | Std. Error | 95% CI | p-value |\n"
-        response += "|------------|----------|------------|--------|----------|\n"
-
-        for e, est in sorted(result["event_study"].items()):
-            response += f"| {e:^10} | {est['estimate']:^8.4f} | {est['se']:^10.4f} | "
-            response += f"[{est['ci_lower']:.3f}, {est['ci_upper']:.3f}] | {est['pvalue']:.4f} |\n"
-
-        # Pre-trends analysis
+        # BJS-specific formal pre-trends test
         if pretrends_test and "pretrends_result" in result:
             pretrends = result["pretrends_result"]
             response += f"\nPre-trends Test\n\n"
             response += f"- Test Statistic: {pretrends.get('statistic', 'N/A')}\n"
             response += f"- p-value: {pretrends.get('pvalue', 'N/A')}\n"
-
             if pretrends.get("pvalue", 1) < 0.05:
                 response += "- Result: Significant pre-trends detected\n"
             else:
                 response += "- Result: No significant pre-trends\n"
 
-        # Check for pre-trends in event study
-        pre_period_estimates = [
-            est for e, est in result["event_study"].items() if e < 0
-        ]
-        if pre_period_estimates:
-            significant_pretrends = sum(
-                1 for est in pre_period_estimates if est["pvalue"] < 0.05
-            )
-            if significant_pretrends > 0:
-                response += f"\nWarning: {significant_pretrends} pre-treatment periods show significant effects\n"
-                response += (
-                    "This may indicate violations of parallel trends assumption.\n"
-                )
-            else:
-                response += "\nNo significant pre-trends detected\n"
-
-        # Statistical significance interpretation
-        if "overall_att" in result and result["overall_att"]["pvalue"] < 0.05:
-            response += "\nStatistically significant treatment effect detected\n"
-        elif "overall_att" in result:
-            response += (
-                "\nNo statistically significant treatment effect at 5% level\n"
-            )
+        response += _format_pretrends_check(result)
+        response += _format_significance(result)
 
         return response
 
@@ -1346,58 +1344,34 @@ async def estimate_dcdh(
         response += f"Method: Fuzzy DID with Negative Weights Correction\n"
         response += f"Mode: {mode.upper()}\n"
         response += f"Effects Estimated: {effects} periods\n\n"
+        response += _format_overall_att(result)
+        response += _format_event_study_table(result)
 
-        # Overall ATT if available
-        if "overall_att" in result:
-            overall = result["overall_att"]
-            response += "Overall Average Treatment Effect\n\n"
-            response += f"- Estimate: {overall['estimate']:.4f}\n"
-            response += f"- Std. Error: {overall['se']:.4f}\n"
-            response += f"- 95% CI: [{overall['ci_lower']:.4f}, {overall['ci_upper']:.4f}]\n"
-            response += f"- p-value: {overall['pvalue']:.4f}\n\n"
-
-        # Event study / Dynamic effects
-        if "event_study" in result:
-            response += "Event Study Estimates\n\n"
-            response += "| Event Time | Estimate | Std. Error | 95% CI | p-value |\n"
-            response += "|------------|----------|------------|--------|----------|\n"
-
-            for e, est in sorted(result["event_study"].items()):
-                response += (
-                    f"| {e:^10} | {est['estimate']:^8.4f} | {est['se']:^10.4f} | "
-                )
-                response += f"[{est['ci_lower']:.3f}, {est['ci_upper']:.3f}] | {est['pvalue']:.4f} |\n"
-
-        # Negative weights diagnostics
+        # DCDH-specific: negative weights diagnostics
         if "negative_weights" in result:
             neg_weights = result["negative_weights"]
             response += f"\nNegative Weights Diagnostics\n\n"
-            response += (
-                f"- Share of Negative Weights: {neg_weights.get('share', 0):.1%}\n"
-            )
+            response += f"- Share of Negative Weights: {neg_weights.get('share', 0):.1%}\n"
             response += f"- Min Weight: {neg_weights.get('min_weight', 'N/A')}\n"
             response += f"- Max Weight: {neg_weights.get('max_weight', 'N/A')}\n"
-
             if neg_weights.get("share", 0) > 0.1:
                 response += "- Warning: Substantial negative weights detected!\n"
                 response += "- Implication: TWFE estimates likely biased\n"
             else:
                 response += "- Status: Low negative weights burden\n"
 
-        # Placebo tests if requested
+        # DCDH-specific: placebo tests
         if placebo > 0 and "placebo_tests" in result:
             placebo_results = result["placebo_tests"]
             response += f"\nPlacebo Tests (Pre-treatment)\n\n"
             response += "| Period | Estimate | Std. Error | p-value | Test Result |\n"
             response += "|--------|----------|------------|---------|-------------|\n"
-
             for p, test in placebo_results.items():
                 test_result = "Pass" if test["pvalue"] > 0.05 else "Fail"
                 response += (
                     f"| {p:^6} | {test['estimate']:^8.4f} | {test['se']:^10.4f} | "
+                    f"{test['pvalue']:^7.4f} | {test_result:^11} |\n"
                 )
-                response += f"{test['pvalue']:^7.4f} | {test_result:^11} |\n"
-
             failed_tests = sum(
                 1 for test in placebo_results.values() if test["pvalue"] <= 0.05
             )
@@ -1407,21 +1381,13 @@ async def estimate_dcdh(
             else:
                 response += "\nAll placebo tests passed\n"
 
-        # Statistical significance interpretation
-        if "overall_att" in result and result["overall_att"]["pvalue"] < 0.05:
-            response += "\nStatistically significant treatment effect detected\n"
-        elif "overall_att" in result:
-            response += (
-                "\nNo statistically significant treatment effect at 5% level\n"
-            )
-
         # Method-specific insights
-        response += f"\nMethod Insights\n\n"
-        response += f"- Advantage: Addresses negative weights problem in TWFE\n"
-        response += (
-            f"- Innovation: Explicitly models treatment effect heterogeneity\n"
-        )
-        response += f"- Robustness: Built-in placebo testing capability\n"
+        response += "\nMethod Insights\n\n"
+        response += "- Advantage: Addresses negative weights problem in TWFE\n"
+        response += "- Innovation: Explicitly models treatment effect heterogeneity\n"
+        response += "- Robustness: Built-in placebo testing capability\n"
+
+        response += _format_significance(result)
 
         return response
 
@@ -1560,39 +1526,19 @@ async def estimate_gardner_two_stage(
 
         # Format results
         response = "# Gardner (2022) Two-Stage DID Results\n\n"
-        response += f"Method: Two-Stage DID Estimator\n"
-
+        response += "Method: Two-Stage DID Estimator\n"
         if covariates:
             response += f"Covariates: {len(covariates)} variables\n"
         response += "\n"
+        response += _format_overall_att(result)
+        response += _format_event_study_table(result)
 
-        # Overall ATT if available
-        if "overall_att" in result:
-            overall = result["overall_att"]
-            response += "Overall Average Treatment Effect\n\n"
-            response += f"- Estimate: {overall['estimate']:.4f}\n"
-            response += f"- Std. Error: {overall['se']:.4f}\n"
-            response += f"- 95% CI: [{overall['ci_lower']:.4f}, {overall['ci_upper']:.4f}]\n"
-            response += f"- p-value: {overall['pvalue']:.4f}\n\n"
-
-        # Event study
-        response += "Event Study Estimates\n\n"
-        response += "| Event Time | Estimate | Std. Error | 95% CI | p-value |\n"
-        response += "|------------|----------|------------|--------|----------|\n"
-
-        for e, est in sorted(result["event_study"].items()):
-            response += f"| {e:^10} | {est['estimate']:^8.4f} | {est['se']:^10.4f} | "
-            response += f"[{est['ci_lower']:.3f}, {est['ci_upper']:.3f}] | {est['pvalue']:.4f} |\n"
-
-        # Two-stage procedure details
+        # Gardner-specific: two-stage procedure details
         if "stage_info" in result:
             stage_info = result["stage_info"]
-            response += f"\nTwo-Stage Procedure Details\n\n"
-            response += f"- Stage 1: Impute counterfactual outcomes using never-treated units\n"
-            response += (
-                f"- Stage 2: Estimate treatment effects using imputed outcomes\n"
-            )
-
+            response += "\nTwo-Stage Procedure Details\n\n"
+            response += "- Stage 1: Impute counterfactual outcomes using never-treated units\n"
+            response += "- Stage 2: Estimate treatment effects using imputed outcomes\n"
             if "imputation_r2" in stage_info:
                 response += f"- Imputation R²: {stage_info['imputation_r2']:.3f}\n"
             if "treated_units" in stage_info:
@@ -1600,37 +1546,17 @@ async def estimate_gardner_two_stage(
             if "control_units" in stage_info:
                 response += f"- Control Units: {stage_info['control_units']:,}\n"
 
-        # Pre-trends analysis
-        pre_period_estimates = [
-            est for e, est in result["event_study"].items() if e < 0
-        ]
-        if pre_period_estimates:
-            significant_pretrends = sum(
-                1 for est in pre_period_estimates if est["pvalue"] < 0.05
-            )
-            if significant_pretrends > 0:
-                response += f"\nWarning: {significant_pretrends} pre-treatment periods show significant effects\n"
-                response += (
-                    "This may indicate violations of parallel trends assumption.\n"
-                )
-            else:
-                response += "\nNo significant pre-trends detected\n"
-
-        # Statistical significance interpretation
-        if "overall_att" in result and result["overall_att"]["pvalue"] < 0.05:
-            response += "\nStatistically significant treatment effect detected\n"
-        elif "overall_att" in result:
-            response += (
-                "\nNo statistically significant treatment effect at 5% level\n"
-            )
+        response += _format_pretrends_check(result)
 
         # Method-specific insights
-        response += f"\nMethod Insights\n\n"
-        response += f"- Advantage: Computationally simple and fast\n"
-        response += f"- Innovation: Two-stage imputation approach\n"
-        response += f"- Robustness: Handles heterogeneous treatment effects\n"
-        response += f"- Flexibility: Easy to incorporate covariates\n"
-        response += f"- Implementation: Built on standard regression methods\n"
+        response += "\nMethod Insights\n\n"
+        response += "- Advantage: Computationally simple and fast\n"
+        response += "- Innovation: Two-stage imputation approach\n"
+        response += "- Robustness: Handles heterogeneous treatment effects\n"
+        response += "- Flexibility: Easy to incorporate covariates\n"
+        response += "- Implementation: Built on standard regression methods\n"
+
+        response += _format_significance(result)
 
         return response
 
@@ -1710,30 +1636,19 @@ async def estimate_gsynth(
         response += f"Method: Interactive Fixed Effects Model\n"
         response += f"Fixed Effects: {result['force']}\n"
         response += f"Inference: {result['inference']}\n"
-
         if covariates:
             response += f"Covariates: {len(covariates)} variables\n"
         response += "\n"
+        response += _format_overall_att(result)
 
-        # Overall ATT
-        overall = result["overall_att"]
-        response += "Overall Average Treatment Effect\n\n"
-        response += f"- Estimate: {overall['estimate']:.4f}\n"
-        if overall["se"] is not None:
-            response += f"- Std. Error: {overall['se']:.4f}\n"
-            response += f"- 95% CI: [{overall['ci_lower']:.4f}, {overall['ci_upper']:.4f}]\n"
-        response += "\n"
-
-        # Model information
+        # gsynth-specific: model information
         response += "Model Information\n\n"
         response += f"- Number of Factors: {result['n_factors']}\n"
         response += f"- Treated Units: {result['n_treated']}\n"
         response += f"- Control Units: {result['n_control']}\n"
         response += f"- Time Periods: {result['n_periods']}\n"
         if "pre_treatment_mspe" in result:
-            response += (
-                f"- Pre-treatment MSPE: {result['pre_treatment_mspe']:.4f}\n"
-            )
+            response += f"- Pre-treatment MSPE: {result['pre_treatment_mspe']:.4f}\n"
         response += "\n"
 
         # Method insights
@@ -1741,20 +1656,10 @@ async def estimate_gsynth(
         response += "- Advantage: Relaxes parallel trends assumption via interactive fixed effects\n"
         response += "- Innovation: Estimates latent factors capturing time-varying confounders\n"
         response += "- Robustness: Handles staggered adoption automatically\n"
-        response += (
-            "- Flexibility: Cross-validation selects optimal number of factors\n"
-        )
+        response += "- Flexibility: Cross-validation selects optimal number of factors\n"
         response += "- Best Use: When parallel trends violated due to unobserved time-varying confounders\n"
 
-        # Statistical significance
-        if overall["se"] is not None:
-            z_stat = abs(overall["estimate"] / overall["se"])
-            if z_stat > 1.96:
-                response += (
-                    "\nStatistically significant treatment effect detected\n"
-                )
-            else:
-                response += "\nNo statistically significant treatment effect at 5% level\n"
+        response += _format_significance(result)
 
         return response
 
@@ -1824,17 +1729,9 @@ async def estimate_synthdid(
         response = "# Synthetic Difference-in-Differences (Arkhangelsky et al. 2019) Results\n\n"
         response += f"Method: Synthetic DiD\n"
         response += f"Variance Estimation: {result['vcov_method']}\n\n"
+        response += _format_overall_att(result)
 
-        # Overall ATT
-        overall = result["overall_att"]
-        response += "Overall Average Treatment Effect\n\n"
-        response += f"- Estimate: {overall['estimate']:.4f}\n"
-        response += f"- Std. Error: {overall['se']:.4f}\n"
-        response += (
-            f"- 95% CI: [{overall['ci_lower']:.4f}, {overall['ci_upper']:.4f}]\n\n"
-        )
-
-        # Comparison with other methods
+        # synthdid-specific: method comparison
         if "comparison_methods" in result:
             comp = result["comparison_methods"]
             response += "Method Comparison\n\n"
@@ -1844,51 +1741,34 @@ async def estimate_synthdid(
             response += f"| Synthetic Control | {comp['synthetic_control']['estimate']:.4f} | {comp['synthetic_control']['note']} |\n"
             response += f"| Synthetic DiD | {comp['synthdid']['estimate']:.4f} | {comp['synthdid']['note']} |\n\n"
 
-        # Sample information
+        # synthdid-specific: sample information
         response += "Sample Information\n\n"
         response += f"- Treated Units: {result['n_treated_units']}\n"
         response += f"- Control Units: {result['n_control_units']}\n"
         response += f"- Pre-treatment Periods: {result['n_pretreatment_periods']}\n"
-        response += (
-            f"- Post-treatment Periods: {result['n_posttreatment_periods']}\n"
-        )
+        response += f"- Post-treatment Periods: {result['n_posttreatment_periods']}\n"
 
-        # Weights information
+        # synthdid-specific: weights
         if "unit_weights" in result:
             response += f"\nUnit Weights\n"
             response += f"- Non-zero weights: {result['unit_weights']['n_nonzero']} control units\n"
-            response += (
-                f"- Maximum weight: {result['unit_weights']['max_weight']:.4f}\n"
-            )
-
+            response += f"- Maximum weight: {result['unit_weights']['max_weight']:.4f}\n"
         if "time_weights" in result:
             response += f"\nTime Weights\n"
             response += f"- Non-zero weights: {result['time_weights']['n_nonzero']} pre-treatment periods\n"
-            response += (
-                f"- Maximum weight: {result['time_weights']['max_weight']:.4f}\n"
-            )
-
+            response += f"- Maximum weight: {result['time_weights']['max_weight']:.4f}\n"
         response += "\n"
 
         # Method insights
         response += "Method Insights\n\n"
-        response += (
-            "- Advantage: Robust to both parallel trends and interpolation bias\n"
-        )
+        response += "- Advantage: Robust to both parallel trends and interpolation bias\n"
         response += "- Innovation: Combines synthetic control unit weighting with DiD time weighting\n"
         response += "- Robustness: Estimates both unit weights (which controls) and time weights (which periods)\n"
         response += "- Comparison: Automatically compares with traditional DiD and SC methods\n"
         response += "- Best Use: Simultaneous treatment timing with potential violations of parallel trends\n"
         response += "- Limitation: Requires all treated units to start treatment at same time\n"
 
-        # Statistical significance
-        z_stat = abs(overall["estimate"] / overall["se"])
-        if z_stat > 1.96:
-            response += "\nStatistically significant treatment effect detected\n"
-        else:
-            response += (
-                "\nNo statistically significant treatment effect at 5% level\n"
-            )
+        response += _format_significance(result)
 
         return response
 
@@ -1970,23 +1850,11 @@ async def estimate_drdid(
         response = "# Doubly Robust DID (Sant'Anna & Zhao 2020) Results\n\n"
         response += f"Method: {result['method']}\n"
         response += f"Estimation: {est_method.upper()}\n"
-        response += (
-            f"Data Type: {'Panel' if panel else 'Repeated Cross-Sections'}\n"
-        )
-
+        response += f"Data Type: {'Panel' if panel else 'Repeated Cross-Sections'}\n"
         if covariates:
             response += f"Covariates: {', '.join(covariates)}\n"
         response += "\n"
-
-        # Overall ATT
-        overall = result["overall_att"]
-        response += "Average Treatment Effect on the Treated (ATT)\n\n"
-        response += f"- Estimate: {overall['estimate']:.4f}\n"
-        response += f"- Std. Error: {overall['se']:.4f}\n"
-        response += (
-            f"- 95% CI: [{overall['ci_lower']:.4f}, {overall['ci_upper']:.4f}]\n"
-        )
-        response += f"- P-value: {overall['pvalue']:.4f}\n\n"
+        response += _format_overall_att(result, label="Average Treatment Effect on the Treated (ATT)")
 
         # Method insights
         response += "Method Insights\n\n"
@@ -1995,13 +1863,7 @@ async def estimate_drdid(
         response += "- Best Use: Canonical 2-period DID with covariates\n"
         response += "- Limitation: Designed for 2-period settings; for staggered adoption, use CS or etwfe\n"
 
-        # Statistical significance
-        if overall["pvalue"] < 0.05:
-            response += "\nStatistically significant treatment effect detected\n"
-        else:
-            response += (
-                "\nNo statistically significant treatment effect at 5% level\n"
-            )
+        response += _format_significance(result)
 
         return response
 
@@ -2078,32 +1940,14 @@ async def estimate_etwfe(
         response = "# Extended TWFE (Wooldridge 2021) Results\n\n"
         response += f"Method: {result['method']}\n"
         response += f"VCOV Type: {result['vcov_type']}\n"
-
         if covariates:
             response += f"Covariates: {', '.join(covariates)}\n"
         response += "\n"
+        response += _format_overall_att(result)
+        response += _format_event_study_table(result, show_ci=False)
+        response += _format_pretrends_check(result)
 
-        # Overall ATT
-        overall = result["overall_att"]
-        response += "Overall Average Treatment Effect\n\n"
-        response += f"- Estimate: {overall['estimate']:.4f}\n"
-        response += f"- Std. Error: {overall['se']:.4f}\n"
-        response += (
-            f"- 95% CI: [{overall['ci_lower']:.4f}, {overall['ci_upper']:.4f}]\n"
-        )
-        response += f"- P-value: {overall['pvalue']:.4f}\n\n"
-
-        # Event study
-        if result.get("event_study"):
-            response += "Event Study Estimates\n\n"
-            response += "| Event Time | Estimate | Std. Error | P-value |\n"
-            response += "|------------|----------|------------|----------|\n"
-            for period in sorted(result["event_study"].keys()):
-                es = result["event_study"][period]
-                response += f"| {period} | {es['estimate']:.4f} | {es['se']:.4f} | {es['pvalue']:.4f} |\n"
-            response += "\n"
-
-        # Cohort effects
+        # etwfe-specific: cohort effects
         if result.get("cohort_effects"):
             response += "Cohort-Specific Effects\n\n"
             response += "| Cohort | Estimate | Std. Error |\n"
@@ -2117,18 +1961,10 @@ async def estimate_etwfe(
         response += "- Approach: Saturated model with cohort-time interactions\n"
         response += "- Advantage: Correctly handles heterogeneous treatment effects in TWFE framework\n"
         response += "- Innovation: Wooldridge shows that augmented TWFE with proper interactions is valid\n"
-        response += (
-            "- Robustness: Uses marginaleffects for proper ATT aggregation\n"
-        )
+        response += "- Robustness: Uses marginaleffects for proper ATT aggregation\n"
         response += "- Best Use: Staggered DID with covariates where TWFE framework is preferred\n"
 
-        # Statistical significance
-        if overall["pvalue"] < 0.05:
-            response += "\nStatistically significant treatment effect detected\n"
-        else:
-            response += (
-                "\nNo statistically significant treatment effect at 5% level\n"
-            )
+        response += _format_significance(result)
 
         return response
 
@@ -3396,6 +3232,7 @@ async def power_analysis(
     try:
         if err := _require_data(): return err
         if err := _require_results(): return err
+        if err := _require_r(): return err
         analyzer = get_analyzer()
 
         # Get latest estimation results (primary estimator)

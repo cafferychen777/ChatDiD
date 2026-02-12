@@ -183,11 +183,14 @@ class DiDAnalyzer:
             if file_type.startswith('.'):
                 file_type = file_type[1:]
 
-            # Load data based on file type
+            # Load data based on file type.
+            # Each branch only passes kwargs relevant to its reader.
+            # 'encoding' is a text-file concept — only CSV supports it.
             if file_type in ["csv"]:
                 self.data = pd.read_csv(file_path, **kwargs)
             elif file_type in ["xlsx", "xls"]:
-                self.data = pd.read_excel(file_path, **kwargs)
+                excel_kwargs = {k: v for k, v in kwargs.items() if k != "encoding"}
+                self.data = pd.read_excel(file_path, **excel_kwargs)
             elif file_type in ["dta"]:
                 try:
                     import pyreadstat
@@ -195,7 +198,7 @@ class DiDAnalyzer:
                 except ImportError:
                     raise ImportError("pyreadstat required for Stata files")
             elif file_type in ["parquet"]:
-                self.data = pd.read_parquet(file_path, **kwargs)
+                self.data = pd.read_parquet(file_path)
             else:
                 raise ValueError(f"Unsupported file type: {file_type}")
 
@@ -1012,14 +1015,14 @@ class DiDAnalyzer:
                 "message": "No estimation results available. Run estimation first."
             }
 
-        # Get results
+        # Get results — "latest" is the primary estimator, set by _store_estimation().
         if results_key == "latest":
-            if not self.results:
+            results = self.results.get("latest")
+            if results is None:
                 return {
                     "status": "error",
-                    "message": "No results available. Please run a DID estimation method first."
+                    "message": "No primary estimation results available. Please run a DID estimator first."
                 }
-            results = list(self.results.values())[-1]
         elif results_key in self.results:
             results = self.results[results_key]
         else:
@@ -1121,14 +1124,14 @@ class DiDAnalyzer:
                 "message": "No estimation results available"
             }
 
-        # Get results
+        # Get results — "latest" is the primary estimator, set by _store_estimation().
         if results_key == "latest":
-            if not self.results:
+            results = self.results.get("latest")
+            if results is None:
                 return {
                     "status": "error",
-                    "message": "No results available. Please run a DID estimation method first."
+                    "message": "No primary estimation results available. Please run a DID estimator first."
                 }
-            results = list(self.results.values())[-1]
         elif results_key in self.results:
             results = self.results[results_key]
         else:
@@ -1158,21 +1161,3 @@ class DiDAnalyzer:
     def set_visualization_backend(self, backend: str) -> bool:
         """Set visualization backend."""
         return self.visualizer.set_backend(backend)
-
-
-# Global analyzer instance for MCP tools
-_global_analyzer: Optional[DiDAnalyzer] = None
-
-
-def get_analyzer() -> DiDAnalyzer:
-    """Get the global DiD analyzer instance."""
-    global _global_analyzer
-    if _global_analyzer is None:
-        _global_analyzer = DiDAnalyzer()
-    return _global_analyzer
-
-
-def reset_analyzer() -> None:
-    """Reset the global analyzer instance."""
-    global _global_analyzer
-    _global_analyzer = None
