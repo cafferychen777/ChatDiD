@@ -16,11 +16,7 @@ from .visualization import DiDVisualizer
 logger = logging.getLogger(__name__)
 
 try:
-    import rpy2.robjects as robjects
-    from rpy2.robjects import pandas2ri, r
-    from rpy2.robjects.packages import importr
-    from rpy2.robjects.conversion import localconverter
-    # Don't use deprecated activate() - use localconverter instead
+    import rpy2.robjects  # noqa: F401 — import to test availability
     R_AVAILABLE = True
 except ImportError as e:
     R_AVAILABLE = False
@@ -46,10 +42,10 @@ class DiDAnalyzer:
         self.visualizer = DiDVisualizer(backend="matplotlib")
         logger.info("DiD visualizer initialized")
 
-        # Initialize R packages if available
+        # Initialize R estimators (which handles all R package loading).
+        # No separate _setup_r_packages needed — REstimators._load_r_packages()
+        # is the single place that loads R packages and configures devices.
         if R_AVAILABLE:
-            self._setup_r_packages()
-            # Import R estimators module
             from .r_estimators import REstimators
             self.r_estimators = REstimators()
         else:
@@ -59,48 +55,6 @@ class DiDAnalyzer:
         from .workflow import DiDWorkflow
         self.workflow = DiDWorkflow(self)
     
-    def _setup_r_packages(self):
-        """Setup R packages for DID analysis."""
-        try:
-            # CRITICAL: Disable R graphics devices BEFORE loading any packages
-            # This prevents macOS from showing Python icon in Dock
-            try:
-                r('options(device = "pdf")')  # Use non-interactive device
-                logger.info("Configured R to use non-interactive graphics device")
-            except Exception as e:
-                logger.warning(f"Could not configure R graphics device: {e}")
-
-            # Install and load required R packages
-            # Core estimators
-            r_packages = [
-                "did",              # Callaway & Sant'Anna
-                "fixest",           # Sun & Abraham
-                "didimputation",    # BJS imputation
-                "did2s",            # Gardner two-stage
-                "DIDmultiplegt",    # de Chaisemartin & D'Haultfoeuille (legacy)
-                "DIDmultiplegtDYN", # de Chaisemartin & D'Haultfoeuille (modern)
-                "staggered",        # Roth & Sant'Anna efficient estimator
-                "bacondecomp",      # Goodman-Bacon decomposition
-                "TwoWayFEWeights",  # TWFE weights analysis
-                "HonestDiD",        # Sensitivity analysis
-                "pretrends",        # Power analysis
-                "gsynth",           # Generalized synthetic control
-                "synthdid",         # Synthetic difference-in-differences
-                "DRDID",            # Doubly robust DID (Sant'Anna & Zhao 2020)
-                "etwfe",            # Extended TWFE (Wooldridge 2021)
-                "panelView",        # Panel data visualization (Mou, Liu & Xu 2023)
-            ]
-
-            for package in r_packages:
-                try:
-                    importr(package)
-                    logger.info(f"Loaded R package: {package}")
-                except Exception as e:
-                    logger.warning(f"Could not load R package {package}: {e}")
-
-        except Exception as e:
-            logger.error(f"Error setting up R packages: {e}")
-
     def prepare_data_for_estimation(
         self,
         unit_col: str,
@@ -147,7 +101,7 @@ class DiDAnalyzer:
         if cohort_col and cohort_col in data.columns:
             # Explicit cohort provided and exists: use it directly
             actual_cohort_col = cohort_col
-        elif treatment_col in data.columns:
+        elif treatment_col and treatment_col in data.columns:
             # Auto-detect: is treatment_col binary or already a cohort?
             unique_vals = data[treatment_col].dropna().unique()
             is_binary = len(unique_vals) <= 2 and set(unique_vals).issubset({0, 1, True, False})
@@ -164,7 +118,14 @@ class DiDAnalyzer:
                 # Non-binary → treat as cohort variable directly
                 actual_cohort_col = treatment_col
         else:
-            actual_cohort_col = cohort_col
+            # Neither cohort_col nor treatment_col resolved to a valid column.
+            # Fail fast with an actionable message instead of passing None downstream.
+            candidates = [treatment_col, cohort_col]
+            raise ValueError(
+                f"Cannot determine cohort/treatment column. "
+                f"Neither {candidates} found in data columns.\n"
+                f"Available columns: {list(data.columns)}"
+            )
 
         # --- Normalize never-treated encoding to 0 ---
         # Different datasets encode never-treated units as NaN, Inf, or large
@@ -360,9 +321,20 @@ class DiDAnalyzer:
         """Run TWFE diagnostics including Bacon decomposition and weight analysis."""
         if self.data is None:
             return {"status": "error", "message": "No data loaded"}
-        
+
+        # Ensure data has been preprocessed through the single source of truth.
+        # This resolves the canonical cohort column (auto-created or explicit)
+        # and normalizes never-treated encoding, so downstream diagnostics
+        # don't need their own guessing logic.
+        self.prepare_data_for_estimation(
+            unit_col=self.config['unit_col'],
+            time_col=self.config['time_col'],
+            treatment_col=self.config['treatment_col'],
+            cohort_col=self.config.get('cohort_col'),
+        )
+
         diagnostics = {}
-        
+
         # Run Goodman-Bacon decomposition if requested and available
         if run_bacon_decomp and self.r_estimators:
             if all(col in self.data.columns for col in [
@@ -376,7 +348,8 @@ class DiDAnalyzer:
                     data=self.data,
                     formula=formula,
                     id_var=self.config['unit_col'],
-                    time_var=self.config['time_col']
+                    time_var=self.config['time_col'],
+                    cohort_col=self.config.get('cohort_col'),
                 )
                 if bacon_result["status"] == "success":
                     diagnostics["bacon_decomp"] = bacon_result

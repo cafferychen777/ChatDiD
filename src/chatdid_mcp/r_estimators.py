@@ -71,17 +71,19 @@ class REstimators:
         data: pd.DataFrame,
         formula: str,
         id_var: str,
-        time_var: str
+        time_var: str,
+        cohort_col: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run Goodman-Bacon (2021) decomposition using bacondecomp::bacon()
-        
+
         Args:
             data: Panel data DataFrame
             formula: R formula (e.g., "outcome ~ treatment")
             id_var: Unit identifier column
             time_var: Time identifier column
-            
+            cohort_col: Cohort column from prepare_data_for_estimation()
+
         Returns:
             Dict with decomposition results
         """
@@ -106,7 +108,9 @@ class REstimators:
             treatment_var = match.group(1)
             
             # Prepare data with corrected treatment variable for Goodman-Bacon
-            data_corrected = self._prepare_data_for_bacon(data, treatment_var, id_var, time_var)
+            data_corrected = self._prepare_data_for_bacon(
+                data, treatment_var, id_var, time_var, cohort_col=cohort_col
+            )
             
             if data_corrected is None:
                 return {
@@ -223,36 +227,37 @@ class REstimators:
                 "message": enriched_msg
             }
     
-    def _prepare_data_for_bacon(self, data: pd.DataFrame, treatment_var: str, 
-                               id_var: str, time_var: str) -> pd.DataFrame:
+    def _prepare_data_for_bacon(self, data: pd.DataFrame, treatment_var: str,
+                               id_var: str, time_var: str,
+                               cohort_col: Optional[str] = None) -> pd.DataFrame:
         """
         Prepare data for Goodman-Bacon decomposition by constructing proper treatment variable.
-        
+
         The original data might have treatment variables that don't follow standard DID convention.
         This method creates a corrected treatment variable that is 1 only after treatment occurs.
-        
+
         Args:
             data: Original panel data
             treatment_var: Name of treatment variable in data
             id_var: Unit identifier column
             time_var: Time identifier column
-            
+            cohort_col: Cohort column (first treatment time) as determined by
+                prepare_data_for_estimation().  If provided and present in data,
+                used directly to construct the treatment indicator.
+
         Returns:
             DataFrame with corrected treatment variable, or None if insufficient variation
         """
         logger.info("Preparing data for Goodman-Bacon decomposition")
-        
+
         data_corrected = data.copy()
-        
-        # Try to detect if we have a cohort/timing variable
-        potential_cohort_vars = ['first.treat', 'cohort', 'treat_year', 'first_treat']
-        cohort_var = None
-        
-        for var in potential_cohort_vars:
-            if var in data_corrected.columns:
-                cohort_var = var
-                break
-        
+
+        # Use the canonical cohort column provided by the caller (ultimately
+        # from prepare_data_for_estimation, the single source of truth for
+        # cohort detection).  No hardcoded guessing list — that would duplicate
+        # logic and could diverge from the canonical preprocessing.
+        cohort_var = cohort_col if (cohort_col and cohort_col in data_corrected.columns) else None
+
         if cohort_var is not None:
             logger.info(f"Using cohort variable: {cohort_var}")
             

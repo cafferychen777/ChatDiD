@@ -29,6 +29,15 @@ mcp = FastMCP(
 # MCP STDIO transport = one process per client session.
 # Within a session, load_data() resets all analysis state (diagnostics,
 # results, config, workflow) to prevent cross-dataset contamination.
+#
+# NOTE on async design: MCP tools are declared async to satisfy the FastMCP
+# interface, but the heavy work (R estimation via rpy2) is synchronous.
+# This is intentional for STDIO transport, which processes one request at a
+# time — there is no concurrency to unblock.  Wrapping R calls in
+# asyncio.to_thread() would add complexity without benefit and is unsafe
+# because rpy2's R interpreter is single-threaded (concurrent calls from
+# multiple threads can crash).  If the transport changes to SSE/WebSocket
+# in the future, a serializing mutex around rpy2 calls would be needed.
 analyzer = None
 storage_manager = None
 
@@ -82,14 +91,62 @@ def _preprocess_did_columns(
     if analyzer is None:
         analyzer = get_analyzer()
 
-    try:
-        processed = analyzer.prepare_data_for_estimation(
-            unit_col=idname, time_col=tname, treatment_col=gname
-        )
-        return {"idname": processed["unit_col"], "gname": processed["cohort_col"]}
-    except Exception as e:
-        logger.warning(f"Auto-preprocessing failed: {e}. Using original column names.")
-        return {"idname": idname, "gname": gname}
+    # Let errors propagate — each MCP tool has its own try/except that
+    # formats a user-facing message.  Silently falling back to raw column
+    # names would mask real problems (missing columns, wrong data types)
+    # and produce misleading estimation results.
+    processed = analyzer.prepare_data_for_estimation(
+        unit_col=idname, time_col=tname, treatment_col=gname
+    )
+    return {"idname": processed["unit_col"], "gname": processed["cohort_col"]}
+
+
+# ---------------------------------------------------------------------------
+# Guard helpers — single source of truth for common pre-condition checks.
+# Each returns an error string (to be returned from the tool) or None.
+# Usage:  if err := _require_data(): return err
+# ---------------------------------------------------------------------------
+
+
+def _require_data() -> Optional[str]:
+    """Guard: return error string if no data loaded, else None."""
+    if get_analyzer().data is None:
+        return "Error: No data loaded. Please load data first."
+    return None
+
+
+def _require_r() -> Optional[str]:
+    """Guard: return error string if R integration not available, else None."""
+    if not get_analyzer().r_estimators:
+        return "Error: R integration not available. Please install rpy2 and required R packages."
+    return None
+
+
+def _require_results() -> Optional[str]:
+    """Guard: return error string if no estimation results available, else None."""
+    analyzer = get_analyzer()
+    if not analyzer.results or "latest" not in analyzer.results:
+        return "Error: No estimation results available. Please run an estimator first."
+    return None
+
+
+def _check_result(result: Dict[str, Any]) -> Optional[str]:
+    """Guard: return error string if result status is not success, else None."""
+    if result.get("status") != "success":
+        return f"Error: {result.get('message', 'Unknown error')}"
+    return None
+
+
+def _store_estimation(method_name: str, result: Dict[str, Any]) -> None:
+    """Store estimation result and set it as the primary (latest) result.
+
+    The 'latest' key points to the primary estimator's result.
+    Workflow steps 4-5 (inference, sensitivity) use this as input.
+    """
+    analyzer = get_analyzer()
+    analyzer.results[method_name] = result
+    analyzer.results["latest"] = result
+    logger.info(f"Stored {method_name} estimation results")
 
 
 # =============================================================================
@@ -485,10 +542,8 @@ async def diagnose_twfe(
         ...               run_twfe_weights=False)
     """
     try:
+        if err := _require_data(): return err
         analyzer = get_analyzer()
-
-        if analyzer.data is None:
-            return "Error: No data loaded. Please load data first."
 
         # Update analyzer configuration
         analyzer.config.update(
@@ -611,7 +666,12 @@ async def diagnose_twfe(
 
 
 @mcp.tool()
-async def diagnose_goodman_bacon(formula: str, id_var: str, time_var: str) -> str:
+async def diagnose_goodman_bacon(
+    formula: str,
+    id_var: str,
+    time_var: str,
+    cohort_col: Optional[str] = None,
+) -> str:
     """
     Run Goodman-Bacon (2021) decomposition using bacondecomp::bacon().
 
@@ -630,6 +690,9 @@ async def diagnose_goodman_bacon(formula: str, id_var: str, time_var: str) -> st
         formula: R formula (e.g., "outcome ~ treatment")
         id_var: Unit identifier column
         time_var: Time identifier column
+        cohort_col: Cohort variable (first treatment time). If omitted, the
+            treatment variable from the formula is auto-detected as binary
+            treatment or cohort via prepare_data_for_estimation().
 
     Returns:
         Decomposition results showing weights and estimates for each 2×2 comparison
@@ -647,19 +710,34 @@ async def diagnose_goodman_bacon(formula: str, id_var: str, time_var: str) -> st
         ... )
     """
     try:
-        if get_analyzer().data is None:
-            return "No data loaded. Please load data first."
+        if err := _require_data(): return err
+        if err := _require_r(): return err
 
-        if not get_analyzer().r_estimators:
-            return "R integration not available. Please install rpy2 and required R packages."
+        # Extract treatment variable from formula to feed into preprocessing.
+        import re
+        match = re.search(r'~\s*(\w+)', formula)
+        if not match:
+            return "Error: Could not parse treatment variable from formula. Expected 'outcome ~ treatment'."
+        treatment_var = match.group(1)
 
-        # Run Goodman-Bacon decomposition
+        # Preprocess through the single source of truth — resolves the
+        # canonical cohort column, normalizes never-treated encoding to 0,
+        # and ensures numeric unit IDs.
+        processed = _preprocess_did_columns(
+            idname=id_var, tname=time_var, gname=cohort_col or treatment_var
+        )
+        actual_cohort_col = processed["gname"]
+
+        # Run Goodman-Bacon decomposition with the resolved cohort column
         result = get_analyzer().r_estimators.goodman_bacon_decomposition(
-            data=get_analyzer().data, formula=formula, id_var=id_var, time_var=time_var
+            data=get_analyzer().data,
+            formula=formula,
+            id_var=id_var,
+            time_var=time_var,
+            cohort_col=actual_cohort_col,
         )
 
-        if result["status"] != "success":
-            return f"Error: {result.get('message', 'Unknown error')}"
+        if err := _check_result(result): return err
 
         # Store diagnostic results for visualization
         analyzer_instance = get_analyzer()
@@ -761,10 +839,8 @@ async def analyze_twfe_weights(
         Always run BOTH diagnostic tools for complete TWFE bias assessment.
     """
     try:
+        if err := _require_data(): return err
         analyzer = get_analyzer()
-
-        if analyzer.data is None:
-            return "Error: No data loaded. Please load data first."
 
         # Call R estimator for weights analysis
         result = analyzer.r_estimators.twfe_weights_analysis(
@@ -775,8 +851,7 @@ async def analyze_twfe_weights(
             treatment_col=treatment_col,
         )
 
-        if result["status"] != "success":
-            return f"Error: {result.get('message', 'Unknown error')}"
+        if err := _check_result(result): return err
 
         # Format results
         response = "# TWFE Weights Analysis Report\n\n"
@@ -913,11 +988,8 @@ async def estimate_callaway_santanna(
         Event study estimates with overall ATT
     """
     try:
-        if get_analyzer().data is None:
-            return "No data loaded. Please load data first."
-
-        if not get_analyzer().r_estimators:
-            return "R integration not available. Please install rpy2 and required R packages."
+        if err := _require_data(): return err
+        if err := _require_r(): return err
 
         # Auto-preprocess data: delegates to the single source of truth
         processed = _preprocess_did_columns(idname, tname, gname)
@@ -935,13 +1007,9 @@ async def estimate_callaway_santanna(
             xformla=xformla,
         )
 
-        if result["status"] != "success":
-            return f"Error: {result.get('message', 'Unknown error')}"
+        if err := _check_result(result): return err
 
-        # Store results for visualization
-        get_analyzer().results["callaway_santanna"] = result
-        get_analyzer().results["latest"] = result
-        logger.info("Stored Callaway & Sant'Anna results for visualization")
+        _store_estimation("callaway_santanna", result)
 
         # Format results
         response = "# Callaway & Sant'Anna (2021) Results\n\n"
@@ -1009,11 +1077,8 @@ async def estimate_sun_abraham(formula: str, cluster_var: Optional[str] = None) 
         column names with dots, dashes, or other special characters.
     """
     try:
-        if get_analyzer().data is None:
-            return "No data loaded. Please load data first."
-
-        if not get_analyzer().r_estimators:
-            return "R integration not available. Please install rpy2 and required R packages."
+        if err := _require_data(): return err
+        if err := _require_r(): return err
 
         # Validate formula contains sunab() function
         if "sunab(" not in formula:
@@ -1024,13 +1089,9 @@ async def estimate_sun_abraham(formula: str, cluster_var: Optional[str] = None) 
             data=get_analyzer().data, formula=formula, cluster_var=cluster_var
         )
 
-        if result["status"] != "success":
-            return f"Error: {result.get('message', 'Unknown error')}"
+        if err := _check_result(result): return err
 
-        # Store results for visualization and sensitivity analysis
-        get_analyzer().results["sun_abraham"] = result
-        get_analyzer().results["latest"] = result
-        logger.info("Stored Sun & Abraham results for sensitivity analysis")
+        _store_estimation("sun_abraham", result)
 
         # Format results
         response = "# Sun & Abraham (2021) Results\n\n"
@@ -1121,11 +1182,8 @@ async def estimate_bjs_imputation(
         Robust and Efficient Estimation"
     """
     try:
-        if get_analyzer().data is None:
-            return "No data loaded. Please load data first."
-
-        if not get_analyzer().r_estimators:
-            return "R integration not available. Please install rpy2 and required R packages."
+        if err := _require_data(): return err
+        if err := _require_r(): return err
 
         # Auto-preprocess data (same logic as workflow)
         processed = _preprocess_did_columns(unit_col, time_col, cohort_col)
@@ -1143,13 +1201,9 @@ async def estimate_bjs_imputation(
             pretrends_test=pretrends_test,
         )
 
-        if result["status"] != "success":
-            return f"Error: {result.get('message', 'Unknown error')}"
+        if err := _check_result(result): return err
 
-        # Store results for visualization and sensitivity analysis
-        get_analyzer().results["bjs_imputation"] = result
-        get_analyzer().results["latest"] = result
-        logger.info("Stored BJS Imputation results for sensitivity analysis")
+        _store_estimation("bjs_imputation", result)
 
         # Format results
         response = "# Borusyak, Jaravel & Spiess (2024) Results\n\n"
@@ -1260,11 +1314,8 @@ async def estimate_dcdh(
         >>> estimate_dcdh("y", "id", "t", "d", controls=["x1", "x2"])
     """
     try:
-        if get_analyzer().data is None:
-            return "No data loaded. Please load data first."
-
-        if not get_analyzer().r_estimators:
-            return "R integration not available. Please install rpy2 and required R packages."
+        if err := _require_data(): return err
+        if err := _require_r(): return err
 
         # Auto-preprocess data (same logic as workflow)
         # Use cohort_col if provided, otherwise use treatment_col
@@ -1286,13 +1337,9 @@ async def estimate_dcdh(
             controls=controls,
         )
 
-        if result["status"] != "success":
-            return f"Error: {result.get('message', 'Unknown error')}"
+        if err := _check_result(result): return err
 
-        # Store results for visualization and sensitivity analysis
-        get_analyzer().results["dcdh"] = result
-        get_analyzer().results["latest"] = result
-        logger.info("Stored DCDH results for sensitivity analysis")
+        _store_estimation("dcdh", result)
 
         # Format results
         response = "# de Chaisemartin & D'Haultfoeuille (2020) Results\n\n"
@@ -1489,11 +1536,8 @@ async def estimate_gardner_two_stage(
         Gardner (2022) "Two-stage differences in differences"
     """
     try:
-        if get_analyzer().data is None:
-            return "No data loaded. Please load data first."
-
-        if not get_analyzer().r_estimators:
-            return "R integration not available. Please install rpy2 and required R packages."
+        if err := _require_data(): return err
+        if err := _require_r(): return err
 
         # Auto-preprocess data (same logic as workflow)
         processed = _preprocess_did_columns(unit_col, time_col, cohort_col)
@@ -1510,13 +1554,9 @@ async def estimate_gardner_two_stage(
             covariates=covariates,
         )
 
-        if result["status"] != "success":
-            return f"Error: {result.get('message', 'Unknown error')}"
+        if err := _check_result(result): return err
 
-        # Store results for visualization and sensitivity analysis
-        get_analyzer().results["gardner_two_stage"] = result
-        get_analyzer().results["latest"] = result
-        logger.info("Stored Gardner Two-Stage results for sensitivity analysis")
+        _store_estimation("gardner_two_stage", result)
 
         # Format results
         response = "# Gardner (2022) Two-Stage DID Results\n\n"
@@ -1639,11 +1679,8 @@ async def estimate_gsynth(
         with Interactive Fixed Effects Models." Political Analysis, 25(1), 57-76.
     """
     try:
-        if get_analyzer().data is None:
-            return "No data loaded. Please load data first."
-
-        if not get_analyzer().r_estimators:
-            return "R integration not available. Please install rpy2 and required R packages."
+        if err := _require_data(): return err
+        if err := _require_r(): return err
 
         # Auto-preprocess data (same logic as workflow)
         processed = _preprocess_did_columns(unit_col, time_col, treatment_col)
@@ -1664,13 +1701,9 @@ async def estimate_gsynth(
             inference=inference,
         )
 
-        if result["status"] != "success":
-            return f"Error: {result.get('message', 'Unknown error')}"
+        if err := _check_result(result): return err
 
-        # Store results
-        get_analyzer().results["gsynth"] = result
-        get_analyzer().results["latest"] = result
-        logger.info("Stored gsynth results")
+        _store_estimation("gsynth", result)
 
         # Format results
         response = "# Generalized Synthetic Control (Xu 2017) Results\n\n"
@@ -1764,11 +1797,8 @@ async def estimate_synthdid(
         (2019). "Synthetic Difference in Differences." NBER Working Paper 25532.
     """
     try:
-        if get_analyzer().data is None:
-            return "No data loaded. Please load data first."
-
-        if not get_analyzer().r_estimators:
-            return "R integration not available. Please install rpy2 and required R packages."
+        if err := _require_data(): return err
+        if err := _require_r(): return err
 
         # Auto-preprocess data (same logic as workflow)
         gname_input = cohort_col if cohort_col else treatment_col
@@ -1786,13 +1816,9 @@ async def estimate_synthdid(
             vcov_method=vcov_method,
         )
 
-        if result["status"] != "success":
-            return f"Error: {result.get('message', 'Unknown error')}"
+        if err := _check_result(result): return err
 
-        # Store results
-        get_analyzer().results["synthdid"] = result
-        get_analyzer().results["latest"] = result
-        logger.info("Stored synthdid results")
+        _store_estimation("synthdid", result)
 
         # Format results
         response = "# Synthetic Difference-in-Differences (Arkhangelsky et al. 2019) Results\n\n"
@@ -1915,11 +1941,8 @@ async def estimate_drdid(
         Differences Estimators." Journal of Econometrics, 219(1), 101-122.
     """
     try:
-        if get_analyzer().data is None:
-            return "No data loaded. Please load data first."
-
-        if not get_analyzer().r_estimators:
-            return "R integration not available. Please install rpy2 and required R packages."
+        if err := _require_data(): return err
+        if err := _require_r(): return err
 
         # Auto-preprocess data (same logic as workflow)
         processed = _preprocess_did_columns(unit_col, time_col, treatment_col)
@@ -1939,13 +1962,9 @@ async def estimate_drdid(
             nboot=nboot,
         )
 
-        if result["status"] != "success":
-            return f"Error: {result.get('message', 'Unknown error')}"
+        if err := _check_result(result): return err
 
-        # Store results
-        get_analyzer().results["drdid"] = result
-        get_analyzer().results["latest"] = result
-        logger.info("Stored DRDID results")
+        _store_estimation("drdid", result)
 
         # Format results
         response = "# Doubly Robust DID (Sant'Anna & Zhao 2020) Results\n\n"
@@ -2030,11 +2049,8 @@ async def estimate_etwfe(
         Mundlak Regression, and Difference-in-Differences Estimators."
     """
     try:
-        if get_analyzer().data is None:
-            return "No data loaded. Please load data first."
-
-        if not get_analyzer().r_estimators:
-            return "R integration not available. Please install rpy2 and required R packages."
+        if err := _require_data(): return err
+        if err := _require_r(): return err
 
         # Auto-preprocess data (same logic as workflow)
         processed = _preprocess_did_columns(unit_col, time_col, cohort_col)
@@ -2054,13 +2070,9 @@ async def estimate_etwfe(
             by_cohort=by_cohort,
         )
 
-        if result["status"] != "success":
-            return f"Error: {result.get('message', 'Unknown error')}"
+        if err := _check_result(result): return err
 
-        # Store results
-        get_analyzer().results["etwfe"] = result
-        get_analyzer().results["latest"] = result
-        logger.info("Stored etwfe results")
+        _store_estimation("etwfe", result)
 
         # Format results
         response = "# Extended TWFE (Wooldridge 2021) Results\n\n"
@@ -2161,11 +2173,8 @@ async def create_panel_view(
         (panelView) and Stata (panelview)." Journal of Statistical Software.
     """
     try:
-        if get_analyzer().data is None:
-            return "No data loaded. Please load data first."
-
-        if not get_analyzer().r_estimators:
-            return "R integration not available. Please install rpy2 and required R packages."
+        if err := _require_data(): return err
+        if err := _require_r(): return err
 
         # Auto-preprocess data (same logic as workflow)
         processed = _preprocess_did_columns(unit_col, time_col, treatment_col)
@@ -2183,8 +2192,7 @@ async def create_panel_view(
             by_timing=by_timing,
         )
 
-        if result["status"] != "success":
-            return f"Error: {result.get('message', 'Unknown error')}"
+        if err := _check_result(result): return err
 
         # Format results
         response = "# Panel Data Visualization (panelView)\n\n"
@@ -3154,26 +3162,15 @@ sensitivity_analysis(
 """
 
     try:
-        # Use the server's analyzer instance directly
+        if err := _require_data(): return err
+        if err := _require_results(): return err
+        if err := _require_r(): return err
         analyzer = get_analyzer()
 
-        if analyzer.data is None:
-            return "Error: No data loaded. Please load data first using load_data."
-
-        if not analyzer.results:
-            return "Error: No estimation results available. Please run an estimator first."
-
-        # Get latest results
-        latest_results = analyzer.results.get(
-            "latest", list(analyzer.results.values())[-1] if analyzer.results else None
-        )
-
+        # Get latest results (primary estimator)
+        latest_results = analyzer.results.get("latest")
         if not latest_results:
             return "Error: No valid estimation results found."
-
-        # Run sensitivity analysis using analyzer's r_estimators
-        if not analyzer.r_estimators:
-            return "Error: R integration not available."
 
         # Extract event study data
         event_study = latest_results.get("event_study", {})
@@ -3281,8 +3278,7 @@ Recommendation:
             confidence_level=confidence_level,
         )
 
-        if sensitivity_result["status"] != "success":
-            return f"Error in sensitivity analysis: {sensitivity_result.get('message', 'Unknown error')}"
+        if err := _check_result(sensitivity_result): return err
 
         # Format results
         method_desc = (
@@ -3398,22 +3394,16 @@ async def power_analysis(
         Power analysis results with minimum detectable effect sizes
     """
     try:
+        if err := _require_data(): return err
+        if err := _require_results(): return err
         analyzer = get_analyzer()
 
-        # Check if data is loaded
-        if analyzer.data is None:
-            return "Error: No data loaded. Please load data first using load_data."
-
-        # Check if we have event study results
-        if "latest" not in analyzer.results:
-            return "Error: No DID estimation results available. Please run an estimator first."
-
-        # Get latest estimation results
+        # Get latest estimation results (primary estimator)
         latest_results = analyzer.results["latest"]
 
         # Check if we have event study results
         if "event_study" not in latest_results:
-            return "No event study results available. Please run an event study estimator (CS, SA, etc.) first."
+            return "Error: No event study results available. Please run an event study estimator (CS, SA, etc.) first."
 
         # Prepare matrices (delegates to single source of truth)
         try:
@@ -3440,8 +3430,7 @@ async def power_analysis(
             analyze_slope=None,  # Just ex ante analysis for now
         )
 
-        if power_result["status"] != "success":
-            return f"Error: Pretrends power analysis failed: {power_result.get('message', 'Unknown error')}"
+        if err := _check_result(power_result): return err
 
         # Format results for user display
         return _format_power_analysis_results(power_result, trend_type)
@@ -3456,8 +3445,7 @@ def _format_power_analysis_results(
 ) -> str:
     """Format pretrends power analysis results for user display."""
 
-    if power_result["status"] != "success":
-        return f"Power Analysis Failed: {power_result.get('message', 'Unknown error')}"
+    if err := _check_result(power_result): return err
 
     minimal_slope = power_result["minimal_detectable_slope"]
     target_power = power_result["target_power"]
