@@ -176,7 +176,9 @@ def _tool_error_handler(func):
         try:
             return await func(*args, **kwargs)
         except Exception as e:
-            logger.error(f"Error in {func.__name__}: {e}")
+            # logger.exception includes the full traceback in stderr,
+            # while the user-facing return is kept concise.
+            logger.exception("Error in %s", func.__name__)
             return f"Error: {str(e)}"
     return wrapper
 
@@ -184,6 +186,67 @@ def _tool_error_handler(func):
 def _method_display(key: str) -> str:
     """Human-readable method name from METHOD_REGISTRY, with fallback."""
     return METHOD_REGISTRY.get(key, key.replace("_", " ").title())
+
+
+def _fval(val: Any, fmt: str = ".4f", fallback: str = "N/A") -> str:
+    """Format a numeric value, or return *fallback* for non-numerics / None."""
+    if isinstance(val, (int, float)):
+        return f"{val:{fmt}}"
+    return str(val) if val is not None else fallback
+
+
+def _extract_att_rows(
+    comparison_data: Dict[str, Dict],
+) -> List[Dict[str, Any]]:
+    """Extract normalised Overall-ATT rows from comparison results.
+
+    Handles field-name variants (se / std_error, pvalue / p_value) so that
+    downstream renderers only see canonical keys.
+    """
+    rows: List[Dict[str, Any]] = []
+    for method_key, results in comparison_data.items():
+        att = results.get("overall_att")
+        if att is None:
+            continue
+        rows.append({
+            "method": method_key,
+            "estimate": att.get("estimate"),
+            "se": att.get("se", att.get("std_error")),
+            "ci_lower": att.get("ci_lower"),
+            "ci_upper": att.get("ci_upper"),
+            "pvalue": att.get("pvalue", att.get("p_value")),
+        })
+    return rows
+
+
+def _collect_sorted_event_times(
+    comparison_data: Dict[str, Dict],
+) -> List:
+    """Collect event-study time periods across all methods, sorted numerically."""
+    times: set = set()
+    for results in comparison_data.values():
+        es = results.get("event_study")
+        if isinstance(es, dict):
+            times.update(es.keys())
+    return sorted(
+        times,
+        key=lambda x: (
+            float(x)
+            if isinstance(x, (int, float, str))
+            and str(x).replace("-", "").replace(".", "").isdigit()
+            else 999
+        ),
+    )
+
+
+def _get_event_estimate(results: Dict, event_time) -> Optional[Dict]:
+    """Return the event-study estimate dict for *event_time*, or ``None``."""
+    es = results.get("event_study")
+    if isinstance(es, dict) and event_time in es:
+        cell = es[event_time]
+        if isinstance(cell, dict):
+            return cell
+    return None
 
 
 def _store_estimation(method_name: str, result: Dict[str, Any]) -> None:
@@ -381,7 +444,7 @@ See README.md "Usage Example" section for more details about file paths.
 """
 
     except Exception as e:
-        logger.error(f"Error in load_data: {e}")
+        logger.exception("Error in load_data")
         # Check if error message indicates file/path issues
         error_msg = str(e).lower()
         if any(
@@ -585,7 +648,6 @@ async def workflow(
         method: Estimation method ("auto", "callaway_santanna", "sun_abraham",
                 "bjs_imputation", "gardner_two_stage", "dcdh", "gsynth", "synthdid",
                 "drdid", "etwfe")
-                Note: "efficient" is DISABLED due to systematic issues.
         cluster_level: Variable for clustering standard errors
 
     Returns:
@@ -706,16 +768,10 @@ async def diagnose_twfe(
         return f"Error: {result['message']}"
 
     diagnostics = result["diagnostics"]
-
-    # Store diagnostic results for visualization
-    if "bacon_decomp" in diagnostics:
-        analyzer.diagnostics["bacon_decomp"] = diagnostics["bacon_decomp"]
-    if "twfe_weights" in diagnostics:
-        analyzer.diagnostics["twfe_weights"] = diagnostics["twfe_weights"]
-    logger.info(
-        f"Stored TWFE diagnostic results. Current diagnostics keys: {list(analyzer.diagnostics.keys())}"
-    )
-    logger.info(f"Analyzer instance ID: {id(analyzer)}")
+    # Diagnostic results already stored by analyzer.diagnose_twfe()
+    # (self.diagnostics["bacon_decomp"] / ["twfe_weights"]).
+    # Standalone tools (diagnose_goodman_bacon, diagnose_twfe_weights)
+    # store their own results since they bypass diagnose_twfe().
 
     # Build diagnostic report
     response = "# TWFE Diagnostic Report\n\n"
@@ -2107,7 +2163,8 @@ async def create_event_study_plot(
             - "gardner_two_stage" - Gardner (2022) Two-Stage
             - "gsynth" - Generalized Synthetic Control (Xu 2017)
             - "synthdid" - Synthetic DID (Arkhangelsky et al. 2019)
-            - "efficient" - DISABLED (see KNOWN_ISSUES.md)
+            - "drdid" - Doubly Robust DID (Sant'Anna & Zhao 2020)
+            - "etwfe" - Extended TWFE (Wooldridge 2021)
         backend: Visualization backend ("matplotlib" or "plotly")
         display_inline: Whether to display image inline in Claude Desktop (default: True)
         save_path: Optional filename to save the plot
@@ -2560,7 +2617,8 @@ async def export_results(
               - "gardner_two_stage" - Gardner (2022) Two-Stage
               - "gsynth" - Generalized Synthetic Control (Xu 2017)
               - "synthdid" - Synthetic DID (Arkhangelsky et al. 2019)
-              - "efficient" - DISABLED (see KNOWN_ISSUES.md)
+              - "drdid" - Doubly Robust DID (Sant'Anna & Zhao 2020)
+              - "etwfe" - Extended TWFE (Wooldridge 2021)
 
             - Methods called via workflow(): Use "workflow_" prefix
               - "workflow_callaway_santanna"
@@ -2591,18 +2649,9 @@ async def export_results(
     """
     analyzer = get_analyzer()
 
-    # Get results to export
-    if results_key == "latest":
-        results = analyzer.results.get("latest", {})
-        if not results:
-            # Try to find most recent result
-            for key in reversed(list(analyzer.results.keys())):
-                if key != "latest":
-                    results = analyzer.results[key]
-                    results_key = key
-                    break
-    else:
-        results = analyzer.results.get(results_key, {})
+    # Get results to export — strict lookup, no silent fallback.
+    # Matches _resolve_results_key semantics: "latest" must exist explicitly.
+    results = analyzer.results.get(results_key, {})
 
     if not results:
         # Provide helpful error with available keys
@@ -2750,7 +2799,8 @@ async def export_comparison(
               - "gardner_two_stage" - Gardner (2022) Two-Stage
               - "gsynth" - Generalized Synthetic Control (Xu 2017)
               - "synthdid" - Synthetic DID (Arkhangelsky et al. 2019)
-              - "efficient" - DISABLED (see KNOWN_ISSUES.md)
+              - "drdid" - Doubly Robust DID (Sant'Anna & Zhao 2020)
+              - "etwfe" - Extended TWFE (Wooldridge 2021)
 
             - Methods called via workflow(): Use "workflow_" prefix
               - "workflow_callaway_santanna"
@@ -3497,115 +3547,60 @@ def _format_comparison_as_markdown(
     comparison_data: Dict[str, Dict], diagnostics: Optional[Dict[str, Any]] = None
 ) -> str:
     """Format method comparison as Markdown table."""
-    output = []
-    output.append("# DID Methods Comparison Report")
-    output.append(f"\nGenerated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    output.append(f"\nNumber of Methods: {len(comparison_data)}")
-    output.append("")
+    output = [
+        "# DID Methods Comparison Report",
+        f"\nGenerated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"\nNumber of Methods: {len(comparison_data)}",
+        "",
+        "Overall Average Treatment Effects (ATT)",
+        "",
+        "| Method | Estimate | Std. Error | 95% CI | p-value | Significant |",
+        "|--------|----------|------------|--------|---------|-------------|",
+    ]
 
-    # Overall ATT Comparison
-    output.append("Overall Average Treatment Effects (ATT)")
-    output.append("")
-    output.append("| Method | Estimate | Std. Error | 95% CI | p-value | Significant |")
-    output.append("|--------|----------|------------|--------|---------|-------------|")
-
-    for method_name, results in comparison_data.items():
-        if "overall_att" in results:
-            att = results["overall_att"]
-            est = att.get("estimate", "N/A")
-            se = att.get("se", att.get("std_error", "N/A"))
-            ci_lower = att.get("ci_lower", "N/A")
-            ci_upper = att.get("ci_upper", "N/A")
-            pval = att.get("pvalue", att.get("p_value", "N/A"))
-
-            # Format values
-            if isinstance(est, (int, float)):
-                est_str = f"{est:.4f}"
-            else:
-                est_str = str(est)
-
-            if isinstance(se, (int, float)):
-                se_str = f"{se:.4f}"
-            else:
-                se_str = str(se)
-
-            if isinstance(ci_lower, (int, float)) and isinstance(
-                ci_upper, (int, float)
-            ):
-                ci_str = f"[{ci_lower:.4f}, {ci_upper:.4f}]"
-            else:
-                ci_str = "N/A"
-
-            if isinstance(pval, (int, float)):
-                pval_str = f"{pval:.4f}"
-                sig_str = "Yes" if pval < 0.05 else "No"
-            else:
-                pval_str = str(pval)
-                sig_str = "N/A"
-
-            output.append(
-                f"| {_method_display(method_name)} | {est_str} | {se_str} | {ci_str} | {pval_str} | {sig_str} |"
-            )
-
-    output.append("")
-
-    # Event Study Comparison (if available)
-    # Find common event times across all methods
-    all_event_times = set()
-    for results in comparison_data.values():
-        if "event_study" in results and isinstance(results["event_study"], dict):
-            all_event_times.update(results["event_study"].keys())
-
-    if all_event_times:
-        sorted_times = sorted(
-            all_event_times,
-            key=lambda x: float(x)
-            if isinstance(x, (int, float, str))
-            and str(x).replace("-", "").replace(".", "").isdigit()
-            else 999,
+    for r in _extract_att_rows(comparison_data):
+        ci = (
+            f"[{_fval(r['ci_lower'])}, {_fval(r['ci_upper'])}]"
+            if isinstance(r["ci_lower"], (int, float))
+            and isinstance(r["ci_upper"], (int, float))
+            else "N/A"
         )
+        pval = r["pvalue"]
+        sig = "Yes" if isinstance(pval, (int, float)) and pval < 0.05 else (
+            "No" if isinstance(pval, (int, float)) else "N/A"
+        )
+        output.append(
+            f"| {_method_display(r['method'])} | {_fval(r['estimate'])} "
+            f"| {_fval(r['se'])} | {ci} | {_fval(pval)} | {sig} |"
+        )
+    output.append("")
 
+    # Event study comparison
+    event_times = _collect_sorted_event_times(comparison_data)
+    if event_times:
         output.append("Event Study Estimates by Period")
         output.append("")
-
-        # Create header
         header = "| Period |"
         separator = "|--------|"
-        for method_name in comparison_data.keys():
-            header += f" {_method_display(method_name)} |"
+        for name in comparison_data:
+            header += f" {_method_display(name)} |"
             separator += "----------|"
-        output.append(header)
-        output.append(separator)
+        output += [header, separator]
 
-        # Create rows for each event time
-        for event_time in sorted_times:
-            row = f"| {event_time} |"
-            for _method_name, results in comparison_data.items():
-                if "event_study" in results and event_time in results["event_study"]:
-                    est_data = results["event_study"][event_time]
-                    if isinstance(est_data, dict):
-                        est = est_data.get("estimate", "N/A")
-                        if isinstance(est, (int, float)):
-                            cell = f" {est:.4f} |"
-                        else:
-                            cell = f" {est} |"
-                    else:
-                        cell = " N/A |"
-                else:
-                    cell = " - |"
-                row += cell
+        for t in event_times:
+            row = f"| {t} |"
+            for results in comparison_data.values():
+                cell = _get_event_estimate(results, t)
+                row += f" {_fval(cell.get('estimate'))} |" if cell else " - |"
             output.append(row)
 
     if diagnostics:
         output.append(_format_comparison_diagnostics_markdown(diagnostics))
 
-    output.append("")
-    output.append("---")
-    output.append("")
-    output.append("Legend:")
-    output.append("- Statistically significant at 5% level")
-    output.append("- Not statistically significant")
-    output.append("- N/A: Not available for this method")
+    output += ["", "---", "", "Legend:",
+               "- Statistically significant at 5% level",
+               "- Not statistically significant",
+               "- N/A: Not available for this method"]
 
     return "\n".join(output)
 
@@ -3614,132 +3609,72 @@ def _format_comparison_as_latex(
     comparison_data: Dict[str, Dict], diagnostics: Optional[Dict[str, Any]] = None
 ) -> str:
     """Format method comparison as LaTeX table."""
-    output = []
-    output.append("% DID Methods Comparison")
-    output.append("% Generated by ChatDiD")
-    output.append("")
+    output = [
+        "% DID Methods Comparison",
+        "% Generated by ChatDiD",
+        "",
+        "\\begin{table}[htbp]",
+        "\\centering",
+        "\\caption{Comparison of DID Estimation Methods - Overall ATT}",
+        "\\begin{tabular}{lccccl}",
+        "\\hline\\hline",
+        "Method & Estimate & Std. Error & 95\\% CI & p-value & Significant \\\\",
+        "\\hline",
+    ]
 
-    # Overall ATT comparison table
-    output.append("\\begin{table}[htbp]")
-    output.append("\\centering")
-    output.append("\\caption{Comparison of DID Estimation Methods - Overall ATT}")
-    output.append("\\begin{tabular}{lccccl}")
-    output.append("\\hline\\hline")
-    output.append(
-        "Method & Estimate & Std. Error & 95\\% CI & p-value & Significant \\\\"
-    )
-    output.append("\\hline")
-
-    for method_name, results in comparison_data.items():
-        if "overall_att" in results:
-            att = results["overall_att"]
-            est = att.get("estimate", "N/A")
-            se = att.get("se", att.get("std_error", "N/A"))
-            ci_lower = att.get("ci_lower", "N/A")
-            ci_upper = att.get("ci_upper", "N/A")
-            pval = att.get("pvalue", att.get("p_value", "N/A"))
-
-            # Format values
-            if isinstance(est, (int, float)):
-                est_str = f"{est:.4f}"
-            else:
-                est_str = str(est)
-
-            if isinstance(se, (int, float)):
-                se_str = f"({se:.4f})"
-            else:
-                se_str = str(se)
-
-            if isinstance(ci_lower, (int, float)) and isinstance(
-                ci_upper, (int, float)
-            ):
-                ci_str = f"[{ci_lower:.3f}, {ci_upper:.3f}]"
-            else:
-                ci_str = "N/A"
-
-            if isinstance(pval, (int, float)):
-                pval_str = f"{pval:.4f}"
-                sig_str = "Yes" if pval < 0.05 else "No"
-            else:
-                pval_str = str(pval)
-                sig_str = "N/A"
-
-            output.append(
-                f"{_method_display(method_name)} & {est_str} & {se_str} & {ci_str} & {pval_str} & {sig_str} \\\\"
-            )
-
-    output.append("\\hline\\hline")
-    output.append("\\end{tabular}")
-    output.append("\\end{table}")
-    output.append("")
-
-    # Event study comparison (simplified - show only key periods)
-    # Find common event times
-    all_event_times = set()
-    for results in comparison_data.values():
-        if "event_study" in results and isinstance(results["event_study"], dict):
-            all_event_times.update(results["event_study"].keys())
-
-    if all_event_times:
-        sorted_times = sorted(
-            all_event_times,
-            key=lambda x: float(x)
-            if isinstance(x, (int, float, str))
-            and str(x).replace("-", "").replace(".", "").isdigit()
-            else 999,
+    for r in _extract_att_rows(comparison_data):
+        # LaTeX convention: SE in parentheses, CI at 3 decimals
+        se_str = f"({r['se']:.4f})" if isinstance(r["se"], (int, float)) else _fval(r["se"])
+        ci = (
+            f"[{_fval(r['ci_lower'], '.3f')}, {_fval(r['ci_upper'], '.3f')}]"
+            if isinstance(r["ci_lower"], (int, float))
+            and isinstance(r["ci_upper"], (int, float))
+            else "N/A"
+        )
+        pval = r["pvalue"]
+        sig = "Yes" if isinstance(pval, (int, float)) and pval < 0.05 else (
+            "No" if isinstance(pval, (int, float)) else "N/A"
+        )
+        output.append(
+            f"{_method_display(r['method'])} & {_fval(r['estimate'])} & {se_str} "
+            f"& {ci} & {_fval(pval)} & {sig} \\\\"
         )
 
-        # Limit to max 10 periods for readability
+    output += ["\\hline\\hline", "\\end{tabular}", "\\end{table}", ""]
+
+    # Event study comparison — limit to 10 key periods for readability
+    sorted_times = _collect_sorted_event_times(comparison_data)
+    if sorted_times:
         if len(sorted_times) > 10:
-            # Select key periods: first 3, middle, last 3, and period 0
-            key_times = sorted_times[:3] + [0] + sorted_times[-3:]
-            key_times = sorted(set(key_times))
+            key_times = sorted(set(sorted_times[:3] + [0] + sorted_times[-3:]))
         else:
             key_times = sorted_times
 
-        num_methods = len(comparison_data)
-        col_spec = "l" + "c" * num_methods
+        col_spec = "l" + "c" * len(comparison_data)
+        output += [
+            "\\begin{table}[htbp]",
+            "\\centering",
+            "\\caption{Event Study Estimates - Selected Periods}",
+            f"\\begin{{tabular}}{{{col_spec}}}",
+            "\\hline\\hline",
+        ]
 
-        output.append("\\begin{table}[htbp]")
-        output.append("\\centering")
-        output.append("\\caption{Event Study Estimates - Selected Periods}")
-        output.append(f"\\begin{{tabular}}{{{col_spec}}}")
-        output.append("\\hline\\hline")
-
-        # Header
         header = "Period"
-        for method_name in comparison_data.keys():
-            header += f" & {_method_display(method_name)}"
-        header += " \\\\"
-        output.append(header)
-        output.append("\\hline")
+        for name in comparison_data:
+            header += f" & {_method_display(name)}"
+        output += [header + " \\\\", "\\hline"]
 
-        # Rows
-        for event_time in key_times:
-            row = f"{event_time}"
-            for _method_name, results in comparison_data.items():
-                if "event_study" in results and event_time in results["event_study"]:
-                    est_data = results["event_study"][event_time]
-                    if isinstance(est_data, dict):
-                        est = est_data.get("estimate", "N/A")
-                        if isinstance(est, (int, float)):
-                            row += f" & {est:.4f}"
-                        else:
-                            row += f" & {est}"
-                    else:
-                        row += " & N/A"
-                else:
-                    row += " & --"
-            row += " \\\\"
-            output.append(row)
+        for t in key_times:
+            row = f"{t}"
+            for results in comparison_data.values():
+                cell = _get_event_estimate(results, t)
+                row += f" & {_fval(cell.get('estimate'))}" if cell else " & --"
+            output.append(row + " \\\\")
 
-        output.append("\\hline\\hline")
-        output.append("\\end{tabular}")
-        output.append("\\end{table}")
+        output += ["\\hline\\hline", "\\end{tabular}", "\\end{table}"]
 
     if diagnostics:
-        output.append("")
-        output.append("% TWFE Diagnostics")
+        output += ["", "% TWFE Diagnostics"]
         bacon = diagnostics.get("bacon_decomp", {})
         weights = diagnostics.get("twfe_weights", {})
         notes = []
@@ -3762,73 +3697,52 @@ def _format_comparison_as_csv(
     import pandas as pd
     from io import StringIO
 
-    output = StringIO()
+    buf = StringIO()
 
-    # Overall ATT comparison
-    att_data = []
-    for method_name, results in comparison_data.items():
-        if "overall_att" in results:
-            att = results["overall_att"]
-            row = {
-                "method": method_name,
-                "estimate": att.get("estimate", ""),
-                "std_error": att.get("se", att.get("std_error", "")),
-                "ci_lower": att.get("ci_lower", ""),
-                "ci_upper": att.get("ci_upper", ""),
-                "p_value": att.get("pvalue", att.get("p_value", "")),
+    # Overall ATT comparison — reuse normalised rows
+    att_rows = _extract_att_rows(comparison_data)
+    if att_rows:
+        # Rename keys to match CSV column convention
+        csv_rows = [
+            {
+                "method": r["method"],
+                "estimate": r["estimate"] if r["estimate"] is not None else "",
+                "std_error": r["se"] if r["se"] is not None else "",
+                "ci_lower": r["ci_lower"] if r["ci_lower"] is not None else "",
+                "ci_upper": r["ci_upper"] if r["ci_upper"] is not None else "",
+                "p_value": r["pvalue"] if r["pvalue"] is not None else "",
             }
-            att_data.append(row)
-
-    if att_data:
-        df_att = pd.DataFrame(att_data)
-        output.write("# Overall ATT Comparison\n")
-        df_att.to_csv(output, index=False)
-        output.write("\n")
+            for r in att_rows
+        ]
+        buf.write("# Overall ATT Comparison\n")
+        pd.DataFrame(csv_rows).to_csv(buf, index=False)
+        buf.write("\n")
 
     # Event study comparison
-    all_event_times = set()
-    for results in comparison_data.values():
-        if "event_study" in results and isinstance(results["event_study"], dict):
-            all_event_times.update(results["event_study"].keys())
-
-    if all_event_times:
-        sorted_times = sorted(
-            all_event_times,
-            key=lambda x: float(x)
-            if isinstance(x, (int, float, str))
-            and str(x).replace("-", "").replace(".", "").isdigit()
-            else 999,
-        )
-
-        event_study_data = []
-        for event_time in sorted_times:
-            row = {"period": event_time}
+    sorted_times = _collect_sorted_event_times(comparison_data)
+    if sorted_times:
+        es_data = []
+        for t in sorted_times:
+            row: Dict[str, Any] = {"period": t}
             for method_name, results in comparison_data.items():
-                if "event_study" in results and event_time in results["event_study"]:
-                    est_data = results["event_study"][event_time]
-                    if isinstance(est_data, dict):
-                        row[f"{method_name}_estimate"] = est_data.get("estimate", "")
-                        row[f"{method_name}_se"] = est_data.get(
-                            "se", est_data.get("std_error", "")
-                        )
-                    else:
-                        row[f"{method_name}_estimate"] = ""
-                        row[f"{method_name}_se"] = ""
+                cell = _get_event_estimate(results, t)
+                if cell is not None:
+                    row[f"{method_name}_estimate"] = cell.get("estimate", "")
+                    row[f"{method_name}_se"] = cell.get("se", cell.get("std_error", ""))
                 else:
                     row[f"{method_name}_estimate"] = ""
                     row[f"{method_name}_se"] = ""
-            event_study_data.append(row)
+            es_data.append(row)
 
-        if event_study_data:
-            df_event = pd.DataFrame(event_study_data)
-            output.write("# Event Study Comparison\n")
-            df_event.to_csv(output, index=False)
+        if es_data:
+            buf.write("# Event Study Comparison\n")
+            pd.DataFrame(es_data).to_csv(buf, index=False)
 
     if diagnostics:
-        output.write("\n# TWFE Diagnostics\n")
-        diag_rows = []
+        buf.write("\n# TWFE Diagnostics\n")
         bacon = diagnostics.get("bacon_decomp", {})
         weights = diagnostics.get("twfe_weights", {})
+        diag_rows = []
         if "overall_estimate" in bacon:
             diag_rows.append({"metric": "twfe_estimate", "value": bacon["overall_estimate"]})
         if "forbidden_comparison_weight" in bacon:
@@ -3836,9 +3750,9 @@ def _format_comparison_as_csv(
         if "negative_weight_share" in weights:
             diag_rows.append({"metric": "negative_weight_share", "value": weights["negative_weight_share"]})
         if diag_rows:
-            pd.DataFrame(diag_rows).to_csv(output, index=False)
+            pd.DataFrame(diag_rows).to_csv(buf, index=False)
 
-    return output.getvalue()
+    return buf.getvalue()
 
 
 # =============================================================================

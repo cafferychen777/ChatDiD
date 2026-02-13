@@ -237,7 +237,7 @@ class DiDAnalyzer:
             logger.error(f"File not found: {e}")
             raise
         except Exception as e:
-            logger.error(f"Error loading data: {e}")
+            logger.exception("Error loading data")
             return {"status": "error", "message": str(e)}
     
     async def explore_data(self) -> Dict[str, Any]:
@@ -256,7 +256,7 @@ class DiDAnalyzer:
             return {"status": "success", "exploration": exploration}
             
         except Exception as e:
-            logger.error(f"Error exploring data: {e}")
+            logger.exception("Error exploring data")
             return {"status": "error", "message": str(e)}
     
     def _analyze_panel_structure(self) -> Dict[str, Any]:
@@ -440,7 +440,7 @@ class DiDAnalyzer:
             )
         elif method == "efficient":
             # EFFICIENT ESTIMATOR IS DISABLED
-            logger.warning("Efficient estimator is disabled due to systematic issues. Falling back to bjs_imputation.")
+            logger.warning("Efficient estimator requested but disabled due to systematic issues.")
             return {
                 "status": "error",
                 "message": "Efficient estimator is disabled due to systematic issues observed across multiple datasets. "
@@ -716,7 +716,7 @@ class DiDAnalyzer:
             return assessment
             
         except Exception as e:
-            logger.error(f"Error in parallel trends assessment: {e}")
+            logger.exception("Error in parallel trends assessment")
             return {
                 "status": "error",
                 "message": f"Parallel trends assessment failed: {str(e)}"
@@ -793,7 +793,7 @@ class DiDAnalyzer:
             return finalized_inference
             
         except Exception as e:
-            logger.error(f"Error in inference finalization: {e}")
+            logger.exception("Error in inference finalization")
             return {
                 "status": "error",
                 "message": f"Inference finalization failed: {str(e)}"

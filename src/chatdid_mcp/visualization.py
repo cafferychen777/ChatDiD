@@ -1168,7 +1168,7 @@ class DiDVisualizer:
             return buffer.getvalue()
 
         except Exception as e:
-            logger.error(f"Error optimizing image: {e}")
+            logger.exception("Error optimizing image")
             return img_bytes
 
     def _create_image_content(self, img_bytes: bytes, format: str = "png") -> Optional[ImageContent]:
@@ -1190,7 +1190,7 @@ class DiDVisualizer:
             img_obj = Image(data=img_bytes, format=format)
             return img_obj.to_image_content()
         except Exception as e:
-            logger.error(f"Error creating ImageContent: {e}")
+            logger.exception("Error creating ImageContent")
             return None
 
     def get_available_backends(self) -> List[str]:

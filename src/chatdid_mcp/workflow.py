@@ -343,16 +343,15 @@ class DiDWorkflow:
 
         Methods:
         - "auto": Automatically select based on diagnostics
-        - "callaway_santanna": CS estimator
-        - "sun_abraham": SA estimator
-        - "bjs_imputation": BJS imputation
-        - "gardner_two_stage": Gardner two-stage
-        - "dcdh": de Chaisemartin & D'Haultfoeuille estimator
-        - "gsynth": Generalized synthetic control (Xu 2017)
+        - "callaway_santanna": Callaway & Sant'Anna (2021)
+        - "sun_abraham": Sun & Abraham (2021)
+        - "bjs_imputation": Borusyak, Jaravel & Spiess (2024)
+        - "gardner_two_stage": Gardner (2022) Two-Stage
+        - "dcdh": de Chaisemartin & D'Haultfoeuille (2020)
+        - "gsynth": Generalized Synthetic Control (Xu 2017)
         - "synthdid": Synthetic DID (Arkhangelsky et al. 2019)
-        - "drdid": Doubly robust DID (Sant'Anna & Zhao 2020)
+        - "drdid": Doubly Robust DID (Sant'Anna & Zhao 2020)
         - "etwfe": Extended TWFE (Wooldridge 2021)
-        - "efficient": DISABLED (see KNOWN_ISSUES.md)
         """
         logger.info(f"Step 3: Applying robust estimator (method={method})")
 

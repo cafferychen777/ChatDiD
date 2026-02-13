@@ -258,7 +258,7 @@ class StorageManager:
             test_file.unlink()
             logger.info(f"Final fallback directory verified: {home_fallback}")
         except Exception as e:
-            logger.error(f"Even home fallback failed: {e}. Output functionality may not work.")
+            logger.exception("Even home fallback failed. Output functionality may not work.")
 
         return str(home_fallback)
     
@@ -377,7 +377,7 @@ class StorageManager:
                 attempt += 1
                 
             except Exception as e:
-                logger.error(f"Error ensuring writable directory: {e}")
+                logger.exception("Error ensuring writable directory")
                 attempt += 1
         
         # If we get here, all attempts failed
